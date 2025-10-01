@@ -1,0 +1,15 @@
+PyYAML==6.0.1
+matplotlib==3.10.3
+numpy==1.26.0
+ofxparse==0.21
+pandas==2.2.3
+pyxlsb==1.0.10
+seaborn==0.13.2
+streamlit==1.45.0
+streamlit_option_menu==0.3.12
+openpyxl==3.1.2
+plotly==5.9.0
+st_annotated_text==4.0.2
+ydata_profiling
+thefuzz==0.22.1
+setuptools
