@@ -1,6 +1,6 @@
 PyYAML==6.0.1
 matplotlib==3.10.3
-numpy==1.26.0
+numpy==1.26.2
 ofxparse==0.21
 pandas==2.2.3
 pyxlsb==1.0.10
