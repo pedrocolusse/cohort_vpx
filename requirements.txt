@@ -1,15 +1,9 @@
 PyYAML
-matplotlib
 numpy
-ofxparse
 pandas
 pyxlsb
-seaborn
 streamlit
 streamlit_option_menu
 openpyxl
 plotly
 st_annotated_text
-ydata_profiling
-thefuzz
-setuptools
