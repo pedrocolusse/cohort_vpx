@@ -11,10 +11,12 @@ CLOSED_COL = "Date entered \"Fechado verbalmente  (Oportunidade) (Closer - Pipel
 # Strings de status que serão usadas na coluna 'Status' do resultado
 STATUS_MEETING = "Reunião realizada SQL"  # string para a primeira entrada (data 1)
 STATUS_CLOSED = "Fechado"  # string para a segunda entrada (data 2)
+STATUS_LOST = "Perdido"  # string para a entrada de perdido
 # Nome da coluna de saída de data
 OUTPUT_DATE_COL = "Data do Status"
 # Nome da coluna de saída para valor do contrato no DataFrame final
 OUTPUT_CONTRACT_COL = "Valor do Contrato"
+LOST_DATE_COL = "Date entered \"Perdidos Closer (Closer - Pipeline de Vendas)\""
 
 # Import necessário
 import streamlit as st
@@ -113,8 +115,10 @@ def process_report(file_path: str,
                    closed_col: str = CLOSED_COL,
                    status_meeting: str = STATUS_MEETING,
                    status_closed: str = STATUS_CLOSED,
+                   status_lost: str = STATUS_LOST,
                    output_date_col: str = OUTPUT_DATE_COL,
-                   output_contract_col: str = OUTPUT_CONTRACT_COL):
+                   output_contract_col: str = OUTPUT_CONTRACT_COL,
+                   lost_date_col: str = LOST_DATE_COL):
     """
     Processa o arquivo e retorna um DataFrame com colunas:
     Nome do negócio | Canal | Valor do Contrato | Status | Data do Status
@@ -143,7 +147,7 @@ def process_report(file_path: str,
         raise KeyError(f"Colunas obrigatórias ausentes no arquivo: {missing}")
 
     # Normalizar colunas de data para datetime (não string ainda)
-    for c in (meeting_col, closed_col):
+    for c in (meeting_col, closed_col, lost_date_col):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
 
@@ -171,9 +175,10 @@ def process_report(file_path: str,
             if len(c_non_null) > 0:
                 contract_val = float(c_non_null.iloc[0])
 
-        # obter a primeira (menor) data para meeting_col e closed_col
+        # obter a primeira (menor) data para meeting_col, closed_col e lost_date_col
         meet_date = pd.NaT
         close_date = pd.NaT
+        lost_date = pd.NaT
         if meeting_col in g.columns:
             meet_dates = pd.to_datetime(g[meeting_col], errors="coerce").dropna()
             if not meet_dates.empty:
@@ -182,6 +187,10 @@ def process_report(file_path: str,
             close_dates = pd.to_datetime(g[closed_col], errors="coerce").dropna()
             if not close_dates.empty:
                 close_date = close_dates.min()
+        if lost_date_col in g.columns:
+            lost_dates = pd.to_datetime(g[lost_date_col], errors="coerce").dropna()
+            if not lost_dates.empty:
+                lost_date = lost_dates.min()
 
         # Regras de inclusão de linhas
         # 1) Se existir meet_date, cria primeira entrada com status_meeting
@@ -191,6 +200,13 @@ def process_report(file_path: str,
             if pd.notnull(close_date):
                 result_rows.append({deal_col: deal, canal_col: canal_val, contract_col: contract_val, "Status": status_closed, output_date_col: close_date})
         # 3) Se NÃO existir meet_date mas existir close_date: NÃO INCLUI (regra solicitada)
+        
+        # 4) Se existir lost_date, cria entrada com status_lost, APENAS SE JÁ NÃO EXISTIR UM "Fechado" PARA O MESMO NEGÓCIO
+        if pd.notnull(lost_date):
+            has_closed = any(row for row in result_rows if row[deal_col] == deal and row["Status"] == status_closed)
+            meeting_before_lost = pd.notnull(meet_date) and (lost_date > meet_date)
+            if not has_closed and meeting_before_lost:
+                result_rows.append({deal_col: deal, canal_col: canal_val, contract_col: contract_val, "Status": status_lost, output_date_col: lost_date})
 
     out = pd.DataFrame(result_rows)
 
@@ -269,7 +285,7 @@ def cohort():
 
     # NOVO: Botão para limpar/resetar os dados
     if st.session_state.file_uploaded:
-        if st.sidebar.button("🗑️ Limpar dados"):
+        if st.sidebar.button("🗑️ Limpar dados e carregar novo arquivo"):
             st.session_state.processed_df = None
             st.session_state.file_uploaded = False
             st.rerun()
@@ -281,7 +297,7 @@ def cohort():
             
             # Exibir as primeiras linhas do DataFrame original (já processado)
             if st.checkbox("**Pré-visualização dos dados originais (processados):**"):
-                st.dataframe(df_original.head())
+                st.dataframe(df_original.head(500))
 
             # Faz uma cópia para trabalhar
             df = df_original.copy()
@@ -321,11 +337,28 @@ def cohort():
             
             # Separar dados por status
             df_fechados = df[df['Status'] == 'Fechado']
+            df_perdidos = df[df['Status'] == 'Perdido']
             
             # Calcular o tamanho total da coorte (para a coluna branca) - TODOS os cohorts
             cohort_sizes = df.groupby('cohort')[client_column].nunique()
             # CORREÇÃO: Reindexar para incluir todos os cohorts, preenchendo com 0 os vazios
             cohort_sizes = cohort_sizes.reindex(all_cohorts, fill_value=0)
+            
+            # NOVO: Calcular métricas adicionais por cohort
+            # Quantidade de fechados por cohort
+            cohort_closed = df_fechados.groupby('cohort')[client_column].nunique()
+            cohort_closed = cohort_closed.reindex(all_cohorts, fill_value=0)
+
+            #Quantidade de perdidos por cohort
+            cohort_lost = df_perdidos.groupby('cohort')[client_column].nunique()
+            cohort_lost = cohort_lost.reindex(all_cohorts, fill_value=0)
+            
+            # Quantidade restante (não fechados)
+            cohort_remaining = cohort_sizes - cohort_closed - cohort_lost
+            cohort_remaining = cohort_remaining.clip(lower=0)  # evitar negativos
+            
+            # Percentual de conversão
+            cohort_conversion = (cohort_closed / cohort_sizes * 100).fillna(0)
             
             # Agrupar considerando apenas fechados
             df_grouped = df_fechados.groupby(['cohort', 'ano_cohort']).agg(n_customers1=(client_column, 'nunique')).reset_index(drop=False)
@@ -344,18 +377,18 @@ def cohort():
             # Adicionar toggle para alternar entre porcentagem e valores absolutos
             show_percentage = st.sidebar.toggle('Mostrar valores em porcentagem', value=False)
             
-            # Criar gráfico interativo com Plotly
+            # Criar gráfico interativo com Plotly - NOVO: passar métricas adicionais
             if show_percentage:
-                create_cohort_heatmap_plotly(retention_matrix, cohort_size, is_percentage=True)
+                create_cohort_heatmap_plotly(retention_matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, is_percentage=True)
             else:
-                create_cohort_heatmap_plotly(cohort_pivot, cohort_size, is_percentage=False)
+                create_cohort_heatmap_plotly(cohort_pivot, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, is_percentage=False)
 
         except Exception as e:
             st.error(f"Erro na análise: {str(e)}")
     else:
         st.info("Aguardando o upload do Excel do Hubspot.")
 
-def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
+def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, is_percentage=True):
     # Preparar dados para o gráfico
     cohort_labels = matrix.index.astype(str).tolist()
     # keep the original column values (these are the actual period numbers, may be non-contiguous)
@@ -400,26 +433,31 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
             fim = 30 * (period + 1)
             sales_cycle_labels.append(f"{inicio}-{fim}")
     
-    # Criar uma figura com subplots: um para o tamanho da coorte e outro para a matriz de retenção
+    # NOVO: Criar uma figura com subplots expandida: 5 colunas
+    # Coluna 1: Tamanho cohort
+    # Coluna 2: Matriz principal
+    # Coluna 3: % Conversão
+    # Coluna 4: Qtd Fechados
+    # Coluna 5: Qtd Restante
     fig = make_subplots(
-        rows=1, cols=2,
-        column_widths=[0.08, 0.92],  # Ajustar largura das colunas
+        rows=1, cols=6,
+        column_widths=[0.05, 0.65, 0.08, 0.06, 0.06, 0.06],  # Ajustar larguras
         shared_yaxes=True,
-        horizontal_spacing=0.005,  # Reduzir espaçamento entre os subplots
+        horizontal_spacing=0.005,
     )
     
-    # Adicionar heatmap para o tamanho da coorte (coluna da esquerda)
+    # Adicionar heatmap para o tamanho da coorte (coluna 1)
     cohort_size_values = cohort_size.values.reshape(-1, 1)
     
     fig.add_trace(
         go.Heatmap(
             z=cohort_size_values,
-            x=['0'],
+            x=['Safra'],
             y=cohort_labels,
             text=cohort_size_values,
             texttemplate="%{text}",
             textfont={"size": 16},
-            colorscale=[[0, 'white'], [1, 'white']],  # Colorscale branco
+            colorscale=[[0, 'white'], [1, 'white']],
             showscale=False,
             hoverinfo='text',
             hovertext=[[f'Tamanho da cohort: {int(val)}' for val in cohort_size_values]],
@@ -427,8 +465,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
         row=1, col=1
     )
     
-    # Adicionar heatmap para a matriz de retenção (coluna da direita)
-    # Criar uma máscara para células vazias (NaN)
+    # Adicionar heatmap para a matriz de retenção (coluna 2)
     mask = np.isnan(matrix.values)
     
     # Criar textos para exibição
@@ -442,7 +479,6 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
         hover_row = []
         for j in range(matrix.shape[1]):
             if not np.isnan(matrix.iloc[i, j]):
-                # use the actual period value from the matrix columns (not the positional index)
                 period_value = period_cols[j]
                 if is_percentage:
                     text_row.append(f"{matrix.iloc[i, j]:.0%}")
@@ -459,7 +495,6 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
     fig.add_trace(
         go.Heatmap(
             z=z_values,
-            # use string labels for categorical x axis so they align with ticktext
             x=period_labels,
             y=cohort_labels,
             text=text_matrix,
@@ -467,45 +502,130 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
             textfont={"size": 18},
             hoverinfo='text',
             hovertext=hover_matrix,
-            colorscale='RdYlGn',  # Vermelho-Amarelo-Verde
+            colorscale='RdYlGn',
             colorbar=dict(
                 title='Taxa de Conversão' if is_percentage else 'Quantidade de Deals',
                 tickformat='.0%' if is_percentage else 'd',
                 ticks='outside'
             ),
             zmin=0,
-            zmax=1 if is_percentage else z_values.max().max(),  # 0-1 para % ou máximo para valores absolutos
-            # Configuração para células NaN transparentes
-            connectgaps=False,  # Não conectar células vazias
-            hoverongaps=False,  # Não mostrar hover em células vazias
+            zmax=1 if is_percentage else z_values.max().max(),
+            connectgaps=False,
+            hoverongaps=False,
             showscale=True,
-            # Definir células NaN como transparentes
             zauto=False,
             zmid=0.5,
         ),
         row=1, col=2
     )
+    
+    # NOVO: CORREÇÃO - Adicionar coluna 3 - % Conversão
+    conversion_values = cohort_conversion.values.reshape(-1, 1)
+    # Criar texto formatado manualmente
+    conversion_text = [[f"{val:.1f}%" for val in conversion_values.flatten()]]
+    conversion_text = list(zip(*conversion_text))  # Transpor para formato correto
+    
+    fig.add_trace(
+        go.Heatmap(
+            z=conversion_values,
+            x=['% Conv.'],
+            y=cohort_labels,
+            text=conversion_text,
+            texttemplate="%{text}",
+            textfont={"size": 16},
+            colorscale=[[0, 'white'], [1, 'white']],
+            showscale=False,
+            hoverinfo='text',
+            hovertext=[[f'<b>Conversão: {val:.1f}%</b>' for val in conversion_values.flatten()]],
+        ),
+        row=1, col=3
+    )
+    
+    # NOVO: CORREÇÃO - Adicionar coluna 4 - Qtd Fechados
+    closed_values = cohort_closed.values.reshape(-1, 1)
+    # Criar texto formatado manualmente
+    closed_text = [[str(int(val)) for val in closed_values.flatten()]]
+    closed_text = list(zip(*closed_text))  # Transpor
+    
+    fig.add_trace(
+        go.Heatmap(
+            z=closed_values,
+            x=['Fechados'],
+            y=cohort_labels,
+            text=closed_text,
+            texttemplate="%{text}",
+            textfont={"size": 16},
+            colorscale=[[0, 'white'], [1, 'white']],
+            showscale=False,
+            hoverinfo='text',
+            hovertext=[[f'Fechados: {int(val)}' for val in closed_values.flatten()]],
+        ),
+        row=1, col=4
+    )
+    
+    # NOVO: CORREÇÃO - Adicionar coluna 5 - Qtd Restante
+    lost_values = cohort_lost.values.reshape(-1, 1)
+    # Criar texto formatado manualmente
+    lost_text = [[str(int(val)) for val in lost_values.flatten()]]
+    lost_text = list(zip(*lost_text))  # Transpor
+    
+    fig.add_trace(
+        go.Heatmap(
+            z=lost_values,
+            x=['Perdidos'],
+            y=cohort_labels,
+            text=lost_text,
+            texttemplate="%{text}",
+            textfont={"size": 16},
+            colorscale=[[0, 'white'], [1, 'white']],
+            showscale=False,
+            hoverinfo='text',
+            hovertext=[[f'Restante: {int(val)}' for val in lost_values.flatten()]],
+        ),
+        row=1, col=5
+    )
+
+    # NOVO: CORREÇÃO - Adicionar coluna 5 - Qtd Restante
+    remaining_values = cohort_remaining.values.reshape(-1, 1)
+    # Criar texto formatado manualmente
+    remaining_text = [[str(int(val)) for val in remaining_values.flatten()]]
+    remaining_text = list(zip(*remaining_text))  # Transpor
+    
+    fig.add_trace(
+        go.Heatmap(
+            z=remaining_values,
+            x=['Restante'],
+            y=cohort_labels,
+            text=remaining_text,
+            texttemplate="%{text}",
+            textfont={"size": 16},
+            colorscale=[[0, 'white'], [1, 'white']],
+            showscale=False,
+            hoverinfo='text',
+            hovertext=[[f'Restante: {int(val)}' for val in remaining_values.flatten()]],
+        ),
+        row=1, col=6
+    )
 
     # Atualizar layout
     fig.update_layout(
-        title_text="Análise de Cohort",
+        title_text="Análise de Cohort - Taxa de Retenção",
         height=700,
-        width=1200,
+        width=1400,  # Aumentar largura para acomodar novas colunas
         yaxis=dict(
             title='',
-            autorange='reversed',  # Inverter o eixo Y para corresponder à imagem original
+            autorange='reversed',
         ),
         xaxis2=dict(
             title='# períodos',
             tickmode='array',
-            # tick positions correspond to categorical positions (0..n-1) so we map them to the string labels
             tickvals=list(range(len(period_labels))),
             ticktext=period_labels,
-            side='top',  # Mover para o topo
+            side='top',
         ),
     )
     
-    # NOVO: Adicionar segundo eixo X com sales cycle
+    # Adicionar segundo eixo X com sales cycle
     fig.update_xaxes(
         title='# sales cycle (dias)',
         tickmode='array',
@@ -519,8 +639,8 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, is_percentage=True):
     fig.update_layout(margin=dict(l=50, r=50, t=100, b=100))
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=False)
-    # Exibir o gráfico no Streamlit
     
+    # Exibir o gráfico no Streamlit
     st.plotly_chart(fig, use_container_width=True)
     
     return
