@@ -4,6 +4,7 @@ FILE = "report.xlsx"  # arquivo deve estar na mesma pasta do notebook
 SHEET = 0  # altere se precisa ler outra sheet (0 = primeira)
 DEAL_COL = "Nome do negócio"  # coluna que identifica o negócio
 CANAL_COL = "Canal"  # coluna com o canal
+FATURAMENTO_COL = "Faturamento Anual"  # coluna com faturamento anual
 # Coluna que contém o valor do contrato (coloque o nome exato da sua planilha aqui)
 CONTRACT_COL = "Valor previsto"  # <--- ajuste este nome conforme a sua planilha
 MEETING_COL = "Date entered \"Reunião realizada (SQL) (Closer - Pipeline de Vendas)\""  # coluna que contém a data em que entrou na fase 'reunião realizada'
@@ -16,7 +17,9 @@ STATUS_LOST = "Perdido"  # string para a entrada de perdido
 OUTPUT_DATE_COL = "Data do Status"
 # Nome da coluna de saída para valor do contrato no DataFrame final
 OUTPUT_CONTRACT_COL = "Valor do Contrato"
+OUTPUT_FATURAMENTO_COL = "Faturamento Anual"
 LOST_DATE_COL = "Date entered \"Perdidos Closer (Closer - Pipeline de Vendas)\""
+
 
 # Import necessário
 import streamlit as st
@@ -33,13 +36,16 @@ from streamlit_option_menu import option_menu
 import tempfile
 import os
 
+
 st.set_page_config(
         page_title="Sandbox Comercial VPx",
         page_icon="🏆",
         layout="wide",
     )
 
+
 st.sidebar.title("Sandbox Comercial VPx")
+
 
 # NOVO: Inicializar session_state para persistência de dados
 if 'processed_df' not in st.session_state:
@@ -47,7 +53,9 @@ if 'processed_df' not in st.session_state:
 if 'file_uploaded' not in st.session_state:
     st.session_state.file_uploaded = False
 
+
 # st.sidebar.image("logo.png", caption="S A N D B O X")
+
 
 @st.cache_data
 def home():
@@ -59,6 +67,7 @@ def home():
     - Análise de cohort, para entender o comportamento de clientes ao longo do tempo. :blue-badge[Comercial] :green-badge[Pipeline Closer]
                 """)
     return
+
 
 # Helper para converter strings monetárias em float
 def parse_money(value):
@@ -105,12 +114,54 @@ def parse_money(value):
     except Exception:
         return np.nan
 
+
+# Helper para formatar período como texto legível
+def format_period(period, period_type='M'):
+    """
+    Converte um período pandas para formato legível
+    M (mensal): 2025-01 -> Jan/2025
+    Q (trimestral): 2025Q1 -> Q1/2025
+    Y (anual): 2025 -> 2025
+    """
+    if pd.isna(period):
+        return ""
+    
+    period_str = str(period)
+    
+    if period_type == 'M':
+        # Formato: 2025-01 -> Jan/2025
+        meses = {
+            '01': 'Jan', '02': 'Fev', '03': 'Mar', '04': 'Abr',
+            '05': 'Mai', '06': 'Jun', '07': 'Jul', '08': 'Ago',
+            '09': 'Set', '10': 'Out', '11': 'Nov', '12': 'Dez'
+        }
+        try:
+            year, month = period_str.split('-')
+            return f"{meses.get(month, month)}/{year}"
+        except:
+            return period_str
+    
+    elif period_type == 'Q':
+        # Formato: 2025Q1 -> Q1/2025
+        try:
+            return period_str.replace('Q', 'T') + '/20' if 'Q' in period_str else period_str
+        except:
+            return period_str
+    
+    elif period_type == 'Y':
+        # Formato: 2025 -> 2025
+        return period_str
+    
+    return period_str
+
+
 # Função principal de processamento
 def process_report(file_path: str,
                    sheet=0,
                    deal_col: str = DEAL_COL,
                    canal_col: str = CANAL_COL,
                    contract_col: str = CONTRACT_COL,
+                   faturamento_col: str = FATURAMENTO_COL,
                    meeting_col: str = MEETING_COL,
                    closed_col: str = CLOSED_COL,
                    status_meeting: str = STATUS_MEETING,
@@ -118,10 +169,12 @@ def process_report(file_path: str,
                    status_lost: str = STATUS_LOST,
                    output_date_col: str = OUTPUT_DATE_COL,
                    output_contract_col: str = OUTPUT_CONTRACT_COL,
+                   output_faturamento_col: str = OUTPUT_FATURAMENTO_COL,
                    lost_date_col: str = LOST_DATE_COL):
     """
     Processa o arquivo e retorna um DataFrame com colunas:
-    Nome do negócio | Canal | Valor do Contrato | Status | Data do Status
+    Nome do negócio | Canal | Faturamento Anual | Valor do Contrato | Status | Data do Status
+
 
     Regras aplicadas:
     - Para cada negócio, busca a primeira data (mais antiga) encontrada na coluna `meeting_col` (se existir)
@@ -129,7 +182,7 @@ def process_report(file_path: str,
     - Gera até 2 linhas por negócio: primeira com a data de `meeting_col` e segunda com `closed_col` quando existirem
       E APENAS se a primeira (meeting_col) existir. Se houver somente fechamento sem reunião, o negócio é excluído.
     - Se apenas `meeting_col` existir, produz somente a primeira linha.
-    - `canal_col` e `contract_col` são extraídos como o primeiro valor não-nulo encontrado para o negócio.
+    - `canal_col`, `faturamento_col` e `contract_col` são extraídos como o primeiro valor não-nulo encontrado para o negócio.
     - A coluna de saída de data está formatada como string 'DD/MM/YYYY'.
     - A coluna de contrato será convertida em numérica (float). Se não for possível, ficará NaN e será substituída por 0 no final.
     """
@@ -137,19 +190,23 @@ def process_report(file_path: str,
     if not p.exists():
         raise FileNotFoundError(f"Arquivo não encontrado: {file_path}")
 
+
     # Leitura
     df = pd.read_excel(p, sheet_name=sheet, engine="openpyxl")
-    print(f"Arquivo lido com {len(df):,} linhas. Colunas detectadas: {list(df.columns)}")
+    # print(f"Arquivo lido com {len(df):,} linhas. Colunas detectadas: {list(df.columns)}")
+
 
     # Conferir colunas pedidas (deal e canal obrigatórios)
     missing = [c for c in (deal_col, canal_col) if c not in df.columns]
     if missing:
         raise KeyError(f"Colunas obrigatórias ausentes no arquivo: {missing}")
 
+
     # Normalizar colunas de data para datetime (não string ainda)
     for c in (meeting_col, closed_col, lost_date_col):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
+
 
     # Se existir a coluna de contrato, vamos tentar convertê-la para numérico desde já
     if contract_col in df.columns:
@@ -157,7 +214,14 @@ def process_report(file_path: str,
     else:
         df['_contract_numeric_parsed'] = np.nan
 
-    # Agrupar por negócio e escolher a primeira (mais antiga) ocorrência das datas, canal e contrato
+    # Se existir a coluna de faturamento, vamos garantir que esteja em formato numérico
+    if faturamento_col in df.columns:
+        df['_faturamento_numeric_parsed'] = pd.to_numeric(df[faturamento_col], errors='coerce')
+    else:
+        df['_faturamento_numeric_parsed'] = np.nan
+
+
+    # Agrupar por negócio e escolher a primeira (mais antiga) ocorrência das datas, canal, faturamento e contrato
     result_rows = []
     grouped = df.groupby(deal_col, dropna=False)
     for deal, g in grouped:
@@ -168,12 +232,20 @@ def process_report(file_path: str,
             if len(non_null) > 0:
                 canal_val = non_null.iloc[0]
 
+        # faturamento: primeiro valor numérico não-nulo encontrado (se coluna existir)
+        faturamento_val = np.nan
+        if '_faturamento_numeric_parsed' in g.columns:
+            f_non_null = g['_faturamento_numeric_parsed'].dropna()
+            if len(f_non_null) > 0:
+                faturamento_val = float(f_non_null.iloc[0])
+
         # contrato: primeiro valor numérico não-nulo encontrado (se coluna existir)
         contract_val = np.nan
         if '_contract_numeric_parsed' in g.columns:
             c_non_null = g['_contract_numeric_parsed'].dropna()
             if len(c_non_null) > 0:
                 contract_val = float(c_non_null.iloc[0])
+
 
         # obter a primeira (menor) data para meeting_col, closed_col e lost_date_col
         meet_date = pd.NaT
@@ -192,13 +264,14 @@ def process_report(file_path: str,
             if not lost_dates.empty:
                 lost_date = lost_dates.min()
 
+
         # Regras de inclusão de linhas
         # 1) Se existir meet_date, cria primeira entrada com status_meeting
         if pd.notnull(meet_date):
-            result_rows.append({deal_col: deal, canal_col: canal_val, contract_col: contract_val, "Status": status_meeting, output_date_col: meet_date})
+            result_rows.append({deal_col: deal, canal_col: canal_val, faturamento_col: faturamento_val, contract_col: contract_val, "Status": status_meeting, output_date_col: meet_date})
             # 2) Se houver close_date E existir meet_date, cria segunda entrada com status_closed
             if pd.notnull(close_date):
-                result_rows.append({deal_col: deal, canal_col: canal_val, contract_col: contract_val, "Status": status_closed, output_date_col: close_date})
+                result_rows.append({deal_col: deal, canal_col: canal_val, faturamento_col: faturamento_val, contract_col: contract_val, "Status": status_closed, output_date_col: close_date})
         # 3) Se NÃO existir meet_date mas existir close_date: NÃO INCLUI (regra solicitada)
         
         # 4) Se existir lost_date, cria entrada com status_lost, APENAS SE JÁ NÃO EXISTIR UM "Fechado" PARA O MESMO NEGÓCIO
@@ -206,9 +279,11 @@ def process_report(file_path: str,
             has_closed = any(row for row in result_rows if row[deal_col] == deal and row["Status"] == status_closed)
             meeting_before_lost = pd.notnull(meet_date) and (lost_date > meet_date)
             if not has_closed and meeting_before_lost:
-                result_rows.append({deal_col: deal, canal_col: canal_val, contract_col: contract_val, "Status": status_lost, output_date_col: lost_date})
+                result_rows.append({deal_col: deal, canal_col: canal_val, faturamento_col: faturamento_val, contract_col: contract_val, "Status": status_lost, output_date_col: lost_date})
+
 
     out = pd.DataFrame(result_rows)
+
 
     # Reordenar colunas para o formato pedido e formatar a coluna de data como DD/MM/YYYY
     if not out.empty:
@@ -216,22 +291,33 @@ def process_report(file_path: str,
         rename_map = {}
         if canal_col != "Canal":
             rename_map[canal_col] = "Canal"
+        # renomear a coluna de faturamento para o nome de saída desejado
+        if faturamento_col and faturamento_col != output_faturamento_col:
+            rename_map[faturamento_col] = output_faturamento_col
         # renomear a coluna de contrato para o nome de saída desejado
         if contract_col and contract_col != output_contract_col:
             rename_map[contract_col] = output_contract_col
         if rename_map:
             out = out.rename(columns=rename_map)
 
-        # assegurar as colunas finais na ordem: deal, Canal, Valor do Contrato, Status, Data do Status
+
+        # assegurar as colunas finais na ordem: deal, Canal, Faturamento Anual, Valor do Contrato, Status, Data do Status
         final_cols = [deal_col, "Canal"]
+        if output_faturamento_col in out.columns:
+            final_cols.append(output_faturamento_col)
         if output_contract_col in out.columns:
             final_cols.append(output_contract_col)
         final_cols.extend(["Status", output_date_col])
         out = out[final_cols]
 
+        # garantir que a coluna de faturamento seja numérica e substituir NaN por 0
+        if output_faturamento_col in out.columns:
+            out[output_faturamento_col] = pd.to_numeric(out[output_faturamento_col], errors='coerce').fillna(0.0)
+
         # garantir que a coluna de contrato seja numérica e substituir NaN por 0
         if output_contract_col in out.columns:
             out[output_contract_col] = pd.to_numeric(out[output_contract_col], errors='coerce').fillna(0.0)
+
 
         # converter para datetime e formatar como string DD/MM/YYYY
         out[output_date_col] = pd.to_datetime(out[output_date_col], errors="coerce").dt.strftime('%d/%m/%Y')
@@ -239,16 +325,24 @@ def process_report(file_path: str,
     else:
         # criar dataframe vazio com colunas corretas
         cols = [deal_col, "Canal", "Status", output_date_col]
+        # incluir coluna de faturamento mesmo vazia
+        if faturamento_col:
+            cols.insert(2, output_faturamento_col)
         # incluir coluna de contrato mesmo vazia
         if contract_col:
-            cols.insert(2, output_contract_col)
+            cols.insert(3, output_contract_col)
         out = pd.DataFrame(columns=cols)
 
-    # remover coluna auxiliar caso exista no df de origem
+
+    # remover colunas auxiliares caso existam no df de origem
     if '_contract_numeric_parsed' in df.columns:
         df = df.drop(columns=['_contract_numeric_parsed'])
+    if '_faturamento_numeric_parsed' in df.columns:
+        df = df.drop(columns=['_faturamento_numeric_parsed'])
+
 
     return df, out
+
 
 def cohort():
     st.sidebar.markdown("""Esta seção permitirá que você realize uma análise por safra em seus dados.Suba sua base de dados em Excel (.xlsx) e selecione os canais e datas para a análise de cohort.
@@ -256,6 +350,7 @@ def cohort():
     
     # NOVO: File uploader com key única
     uploaded_file = st.sidebar.file_uploader("Escolha um arquivo Excel (.xlsx)", type="xlsx", key="file_uploader")
+
 
     # NOVO: Processar arquivo quando for carregado
     if uploaded_file is not None and not st.session_state.file_uploaded:
@@ -265,8 +360,10 @@ def cohort():
                 tmp.write(uploaded_file.getbuffer())
                 tmp_path = tmp.name
 
+
             # process_report retorna (raw_df, final_df)
             _, processed_df = process_report(tmp_path, sheet=0)
+
 
             # remover arquivo temporário
             try:
@@ -274,14 +371,17 @@ def cohort():
             except Exception:
                 pass
 
+
             # NOVO: Salvar no session_state
             st.session_state.processed_df = processed_df
             st.session_state.file_uploaded = True
             st.sidebar.success("✅ Arquivo processado com sucesso!")
 
+
         except Exception as e:
             st.error(f"Erro ao processar arquivo: {str(e)}")
             return
+
 
     # NOVO: Botão para limpar/resetar os dados
     if st.session_state.file_uploaded:
@@ -289,6 +389,7 @@ def cohort():
             st.session_state.processed_df = None
             st.session_state.file_uploaded = False
             st.rerun()
+
 
     # NOVO: Usar dados do session_state
     if st.session_state.processed_df is not None:
@@ -299,8 +400,10 @@ def cohort():
             if st.checkbox("**Pré-visualização dos dados originais (processados):**"):
                 st.dataframe(df_original.head(500))
 
+
             # Faz uma cópia para trabalhar
             df = df_original.copy()
+
 
             # Filtrar por canais via multiseleção
             if 'Canal' in df.columns:
@@ -311,12 +414,43 @@ def cohort():
             if selected_channels:
                 df = df[df['Canal'].isin(selected_channels)]
 
+            # NOVO: Filtrar por Faturamento Anual via select_slider
+            if 'Faturamento Anual' in df.columns:
+                faturamentos = df['Faturamento Anual'].dropna()
+                if len(faturamentos) > 0:
+                    min_fat = float(faturamentos.min())
+                    max_fat = float(faturamentos.max())
+                    
+                    # Criar faixas de faturamento para o slider
+                    faixas = [0, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000, 500_000_000, max_fat]
+                    # Garantir que as faixas estejam ordenadas e únicas
+                    faixas = sorted(list(set([f for f in faixas if min_fat <= f <= max_fat])))
+                    
+                    # Adicionar min_fat se não estiver na lista
+                    if min_fat not in faixas:
+                        faixas = [min_fat] + faixas
+                    
+                    if len(faixas) > 1:
+                        selected_fat_range = st.sidebar.select_slider(
+                            "Filtrar por Faturamento Anual (R$):",
+                            options=faixas,
+                            value=(min_fat, max_fat),
+                            format_func=lambda x: f"R$ {x:,.0f}".replace(',', '.')
+                        )
+                        
+                        # Aplicar filtro
+                        df = df[(df['Faturamento Anual'] >= selected_fat_range[0]) & 
+                               (df['Faturamento Anual'] <= selected_fat_range[1])]
+
+
             # Colunas fixas: data = 'Data do Status', cliente = 'Nome do negócio'
             date_column = 'Data do Status'
             client_column = 'Nome do negócio'
 
+
             # Converter coluna de data para datetime com formato padronizado
             df[date_column] = pd.to_datetime(df[date_column], format='%d/%m/%Y', errors='coerce')
+
 
             # Filtro por intervalo de datas (opcional)
             date_filter = st.sidebar.date_input("Selecione o intervalo de datas:", [], format="DD/MM/YYYY")
@@ -324,9 +458,11 @@ def cohort():
             if date_filter and len(date_filter) == 2:
                 df = df[(df[date_column] >= date_filter[0]) & (df[date_column] <= date_filter[1])]
 
+
             # Selecionar período para a coorte
             periodo = st.sidebar.selectbox("Selecione o período para a coorte:", ["M", "Y", "Q"], index=0,
                                           format_func=lambda x: "Mensal" if x == "M" else "Anual" if x == "Y" else "Trimestral")
+
 
             # Processamento dos dados para análise de coorte
             df['ano_cohort'] = df[date_column].dt.to_period(periodo)
@@ -349,6 +485,7 @@ def cohort():
             cohort_closed = df_fechados.groupby('cohort')[client_column].nunique()
             cohort_closed = cohort_closed.reindex(all_cohorts, fill_value=0)
 
+
             #Quantidade de perdidos por cohort
             cohort_lost = df_perdidos.groupby('cohort')[client_column].nunique()
             cohort_lost = cohort_lost.reindex(all_cohorts, fill_value=0)
@@ -360,9 +497,44 @@ def cohort():
             # Percentual de conversão
             cohort_conversion = (cohort_closed / cohort_sizes * 100).fillna(0)
             
+            # NOVO: Calcular tempo médio de fechamento por cohort
+            # Para cada cohort, calcular a média de dias entre reunião realizada e fechamento
+            cohort_avg_days = {}
+            for cohort in all_cohorts:
+                # Pegar todos os negócios dessa cohort
+                cohort_deals = df[df['cohort'] == cohort][client_column].unique()
+                days_list = []
+                
+                for deal in cohort_deals:
+                    # Pegar as datas de reunião e fechamento para esse negócio
+                    deal_data = df[df[client_column] == deal].sort_values(date_column)
+                    
+                    # Verificar se tem status de reunião e fechamento
+                    meeting_rows = deal_data[deal_data['Status'] == 'Reunião realizada SQL']
+                    closed_rows = deal_data[deal_data['Status'] == 'Fechado']
+                    
+                    if not meeting_rows.empty and not closed_rows.empty:
+                        meeting_date = meeting_rows.iloc[0][date_column]
+                        closed_date = closed_rows.iloc[0][date_column]
+                        
+                        if pd.notnull(meeting_date) and pd.notnull(closed_date):
+                            days_diff = (closed_date - meeting_date).days
+                            if days_diff >= 0:  # apenas valores positivos
+                                days_list.append(days_diff)
+                
+                # Calcular média
+                if days_list:
+                    cohort_avg_days[cohort] = np.mean(days_list)
+                else:
+                    cohort_avg_days[cohort] = 0
+            
+            # Converter para Series e reindexar
+            cohort_avg_days = pd.Series(cohort_avg_days).reindex(all_cohorts, fill_value=0)
+            
             # Agrupar considerando apenas fechados
             df_grouped = df_fechados.groupby(['cohort', 'ano_cohort']).agg(n_customers1=(client_column, 'nunique')).reset_index(drop=False)
             df_grouped['period_number'] = (df_grouped.ano_cohort - df_grouped.cohort).apply(attrgetter('n'))
+
 
             # Criar pivot table com os dados de fechados
             cohort_pivot = df_grouped.pivot_table(index='cohort', columns='period_number', values='n_customers1')
@@ -374,21 +546,118 @@ def cohort():
             cohort_size = cohort_sizes  # Agora já contém todos os cohorts
             retention_matrix = cohort_pivot.divide(cohort_size, axis=0)
 
+
             # Adicionar toggle para alternar entre porcentagem e valores absolutos
-            show_percentage = st.sidebar.toggle('Mostrar valores em porcentagem', value=False)
+            show_percentage = st.toggle('Mostrar valores em porcentagem', value=False)
             
-            # Criar gráfico interativo com Plotly - NOVO: passar métricas adicionais
+            # Criar gráfico interativo com Plotly - NOVO: passar métricas adicionais incluindo tempo médio
             if show_percentage:
-                create_cohort_heatmap_plotly(retention_matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, is_percentage=True)
+                create_cohort_heatmap_plotly(retention_matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, is_percentage=True)
             else:
-                create_cohort_heatmap_plotly(cohort_pivot, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, is_percentage=False)
+                create_cohort_heatmap_plotly(cohort_pivot, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, is_percentage=False)
+
+            # NOVO: Adicionar seção de detalhamento de clientes por métrica
+            st.markdown("---")
+            st.subheader("📋 Detalhamento de Clientes por Métrica")
+            
+            # Criar seletor de métrica para visualizar detalhes
+            metric_to_show = st.selectbox(
+                "Selecione a métrica para ver os detalhes dos clientes:",
+                options=["Qtd Fechados", "Qtd Perdidos", "Qtd Restante"],
+                key="metric_detail_selector"
+            )
+            
+            # Preparar DataFrame baseado na métrica selecionada
+            if metric_to_show == "Qtd Fechados":
+                status_filter = "Fechado"
+                detail_df = df[df['Status'] == status_filter].copy()
+                detail_df = detail_df.drop_duplicates(subset=[client_column])
+                st.markdown(f"**Total de negócios fechados:** {len(detail_df)}")
+                
+            elif metric_to_show == "Qtd Perdidos":
+                status_filter = "Perdido"
+                detail_df = df[df['Status'] == status_filter].copy()
+                detail_df = detail_df.drop_duplicates(subset=[client_column])
+                st.markdown(f"**Total de negócios perdidos:** {len(detail_df)}")
+                
+            elif metric_to_show == "Qtd Restante":
+                # Clientes que têm "Reunião realizada SQL" mas não têm "Fechado" nem "Perdido"
+                reuniao_deals = df[df['Status'] == 'Reunião realizada SQL'][client_column].unique()
+                fechado_deals = df[df['Status'] == 'Fechado'][client_column].unique()
+                perdido_deals = df[df['Status'] == 'Perdido'][client_column].unique()
+                
+                # Restante = Reunião - (Fechado + Perdido)
+                restante_deals = set(reuniao_deals) - set(fechado_deals) - set(perdido_deals)
+                
+                detail_df = df[df[client_column].isin(restante_deals)].copy()
+                detail_df = detail_df[detail_df['Status'] == 'Reunião realizada SQL']
+                detail_df = detail_df.drop_duplicates(subset=[client_column])
+                st.markdown(f"**Total de negócios restantes (em aberto):** {len(detail_df)}")
+            
+            # Exibir DataFrame com informações
+            if not detail_df.empty:
+                # Reorganizar colunas para melhor visualização
+                display_cols = [client_column, 'Canal', 'Faturamento Anual', 'Valor do Contrato', 'Status', date_column]
+                display_cols = [col for col in display_cols if col in detail_df.columns]
+                
+                # Formatar valores monetários e datas
+                detail_display = detail_df[display_cols].copy()
+                
+                # Formatar data como DD/MM/YYYY
+                if date_column in detail_display.columns:
+                    detail_display[date_column] = pd.to_datetime(detail_display[date_column], errors='coerce').dt.strftime('%d/%m/%Y')
+                
+                if 'Faturamento Anual' in detail_display.columns:
+                    detail_display['Faturamento Anual'] = detail_display['Faturamento Anual'].apply(
+                        lambda x: f"R$ {x:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.') if pd.notnull(x) and x > 0 else "-"
+                    )
+                if 'Valor do Contrato' in detail_display.columns:
+                    detail_display['Valor do Contrato'] = detail_display['Valor do Contrato'].apply(
+                        lambda x: f"R$ {x:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.') if pd.notnull(x) and x > 0 else "-"
+                    )
+                
+                # Adicionar filtros por cohort
+                st.markdown("**Filtrar por safra (cohort):**")
+                
+                # Criar mapeamento de cohorts formatados
+                cohort_mapping = {}
+                for cohort in sorted(detail_df['cohort'].dropna().unique()):
+                    formatted = format_period(cohort, periodo)
+                    cohort_mapping[formatted] = cohort
+                
+                cohort_options = ['Todas'] + list(cohort_mapping.keys())
+                selected_cohort_filter = st.selectbox("Selecione a safra:", options=cohort_options, key="cohort_filter")
+                
+                if selected_cohort_filter != 'Todas':
+                    original_cohort = cohort_mapping[selected_cohort_filter]
+                    detail_display = detail_display[detail_df['cohort'] == original_cohort]
+                
+                # Exibir tabela
+                st.dataframe(
+                    detail_display,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Botão para download
+                csv = detail_display.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    label=f"⬇️ Baixar lista de {metric_to_show} em CSV",
+                    data=csv,
+                    file_name=f"detalhamento_{metric_to_show.lower().replace(' ', '_')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhum cliente encontrado para esta métrica com os filtros aplicados.")
+
 
         except Exception as e:
             st.error(f"Erro na análise: {str(e)}")
     else:
         st.info("Aguardando o upload do Excel do Hubspot.")
 
-def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, is_percentage=True):
+
+def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, is_percentage=True):
     # Preparar dados para o gráfico
     cohort_labels = matrix.index.astype(str).tolist()
     # keep the original column values (these are the actual period numbers, may be non-contiguous)
@@ -399,6 +668,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
     except Exception:
         # fallback: use positional indices if coercion fails
         period_ints = list(range(len(period_cols)))
+
 
     # Ensure we always show up to period 5 (user request). Compute the full range to include
     # any existing max period or 5, whichever is larger.
@@ -411,9 +681,11 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
     desired_max = max(max_p, 5)
     full_periods = list(range(min_p, desired_max + 1))
 
+
     # Reindex the matrix to include missing period columns (filled with NaN). This ensures
     # the heatmap has a column for period 5 even if there is no data for it.
     matrix = matrix.reindex(columns=full_periods)
+
 
     # Update period_cols and labels to the full range
     period_cols = full_periods
@@ -434,14 +706,39 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             sales_cycle_labels.append(f"{inicio}-{fim}")
     
     # NOVO: Criar uma figura com subplots expandida: 5 colunas
-    # Coluna 1: Tamanho cohort
-    # Coluna 2: Matriz principal
-    # Coluna 3: % Conversão
-    # Coluna 4: Qtd Fechados
-    # Coluna 5: Qtd Restante
+
+
+    selected_metrics = st.multiselect(
+        "Selecione as métricas adicionais para exibir:", 
+        options=["Tx de Conversão", "Qtd Fechados", "Qtd Perdidos", "Qtd Restante", "Tempo Médio", "Ticket Médio", "Ticket Acumulado"],
+        default=["Tx de Conversão", "Qtd Fechados", "Qtd Perdidos", "Qtd Restante", "Tempo Médio", "Ticket Médio", "Ticket Acumulado"],
+        key="additional_metrics"
+    )
+
+
+    # Calcular número de colunas dinamicamente
+    num_metrics = len(selected_metrics)
+    total_cols = 2 + num_metrics  # 2 colunas fixas + métricas selecionadas
+
+
+    # Calcular column_widths dinamicamente
+    fixed_widths = [0.05, 0.65]  # Larguras das duas primeiras colunas fixas
+    metric_widths = [0.06] * num_metrics  # 0.06 para cada métrica selecionada
+    column_widths = fixed_widths + metric_widths
+
+
+    # num_metrics
+    # total_cols
+    # fixed_widths
+    # metric_widths
+    # column_widths
+
+
+    # Criar subplot
     fig = make_subplots(
-        rows=1, cols=6,
-        column_widths=[0.05, 0.65, 0.08, 0.06, 0.06, 0.06],  # Ajustar larguras
+        rows=1, 
+        cols=total_cols,
+        column_widths=column_widths,
         shared_yaxes=True,
         horizontal_spacing=0.005,
     )
@@ -519,97 +816,138 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         row=1, col=2
     )
     
+    
     # NOVO: CORREÇÃO - Adicionar coluna 3 - % Conversão
     conversion_values = cohort_conversion.values.reshape(-1, 1)
     # Criar texto formatado manualmente
     conversion_text = [[f"{val:.1f}%" for val in conversion_values.flatten()]]
     conversion_text = list(zip(*conversion_text))  # Transpor para formato correto
     
-    fig.add_trace(
-        go.Heatmap(
-            z=conversion_values,
-            x=['% Conv.'],
-            y=cohort_labels,
-            text=conversion_text,
-            texttemplate="%{text}",
-            textfont={"size": 16},
-            colorscale=[[0, 'white'], [1, 'white']],
-            showscale=False,
-            hoverinfo='text',
-            hovertext=[[f'<b>Conversão: {val:.1f}%</b>' for val in conversion_values.flatten()]],
-        ),
-        row=1, col=3
-    )
+    base_col = 3  # Coluna base para métricas adicionais
+
+
+    if "Tx de Conversão" in selected_metrics:
+        col_position = base_col + selected_metrics.index("Tx de Conversão")
+        fig.add_trace(
+            go.Heatmap(
+                z=conversion_values,
+                x=['% Conv.'],
+                y=cohort_labels,
+                text=conversion_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'<b>Conversão: {val:.1f}%</b>' for val in conversion_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
     
     # NOVO: CORREÇÃO - Adicionar coluna 4 - Qtd Fechados
     closed_values = cohort_closed.values.reshape(-1, 1)
     # Criar texto formatado manualmente
     closed_text = [[str(int(val)) for val in closed_values.flatten()]]
     closed_text = list(zip(*closed_text))  # Transpor
+
+
+    if "Qtd Fechados" in selected_metrics:
+        col_position = base_col + selected_metrics.index("Qtd Fechados")
+        fig.add_trace(
+            go.Heatmap(
+                z=closed_values,
+                x=['Fechados'],
+                y=cohort_labels,
+                text=closed_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'Fechados: {int(val)}' for val in closed_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
     
-    fig.add_trace(
-        go.Heatmap(
-            z=closed_values,
-            x=['Fechados'],
-            y=cohort_labels,
-            text=closed_text,
-            texttemplate="%{text}",
-            textfont={"size": 16},
-            colorscale=[[0, 'white'], [1, 'white']],
-            showscale=False,
-            hoverinfo='text',
-            hovertext=[[f'Fechados: {int(val)}' for val in closed_values.flatten()]],
-        ),
-        row=1, col=4
-    )
-    
-    # NOVO: CORREÇÃO - Adicionar coluna 5 - Qtd Restante
+    # NOVO: CORREÇÃO - Adicionar coluna 5 - Qtd Perdidos
     lost_values = cohort_lost.values.reshape(-1, 1)
     # Criar texto formatado manualmente
     lost_text = [[str(int(val)) for val in lost_values.flatten()]]
     lost_text = list(zip(*lost_text))  # Transpor
-    
-    fig.add_trace(
-        go.Heatmap(
-            z=lost_values,
-            x=['Perdidos'],
-            y=cohort_labels,
-            text=lost_text,
-            texttemplate="%{text}",
-            textfont={"size": 16},
-            colorscale=[[0, 'white'], [1, 'white']],
-            showscale=False,
-            hoverinfo='text',
-            hovertext=[[f'Restante: {int(val)}' for val in lost_values.flatten()]],
-        ),
-        row=1, col=5
-    )
 
-    # NOVO: CORREÇÃO - Adicionar coluna 5 - Qtd Restante
+
+    if "Qtd Perdidos" in selected_metrics:
+        col_position = base_col + selected_metrics.index("Qtd Perdidos")
+        fig.add_trace(
+            go.Heatmap(
+                z=lost_values,
+                x=['Perdidos'],
+                y=cohort_labels,
+                text=lost_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'Perdidos: {int(val)}' for val in lost_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
+
+
+    # NOVO: CORREÇÃO - Adicionar coluna 6 - Qtd Restante
     remaining_values = cohort_remaining.values.reshape(-1, 1)
     # Criar texto formatado manualmente
     remaining_text = [[str(int(val)) for val in remaining_values.flatten()]]
     remaining_text = list(zip(*remaining_text))  # Transpor
-    
-    fig.add_trace(
-        go.Heatmap(
-            z=remaining_values,
-            x=['Restante'],
-            y=cohort_labels,
-            text=remaining_text,
-            texttemplate="%{text}",
-            textfont={"size": 16},
-            colorscale=[[0, 'white'], [1, 'white']],
-            showscale=False,
-            hoverinfo='text',
-            hovertext=[[f'Restante: {int(val)}' for val in remaining_values.flatten()]],
-        ),
-        row=1, col=6
-    )
+
+
+    if "Qtd Restante" in selected_metrics:
+        col_position = base_col + selected_metrics.index("Qtd Restante")
+        fig.add_trace(
+            go.Heatmap(
+                z=remaining_values,
+                x=['Restante'],
+                y=cohort_labels,
+                text=remaining_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'Restante: {int(val)}' for val in remaining_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
+
+    # NOVO: Adicionar coluna - Tempo Médio de Fechamento
+    avg_days_values = cohort_avg_days.values.reshape(-1, 1)
+    # Criar texto formatado manualmente
+    avg_days_text = [[f"{val:.0f}d" if val > 0 else "-" for val in avg_days_values.flatten()]]
+    avg_days_text = list(zip(*avg_days_text))  # Transpor
+
+    if "Tempo Médio" in selected_metrics:
+        col_position = base_col + selected_metrics.index("Tempo Médio")
+        fig.add_trace(
+            go.Heatmap(
+                z=avg_days_values,
+                x=['Dias'],
+                y=cohort_labels,
+                text=avg_days_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'<b>Tempo médio: {val:.0f} dias</b>' if val > 0 else '<b>Sem dados</b>' for val in avg_days_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
+
 
     # Atualizar layout
     fig.update_layout(
-        title_text="Análise de Cohort - Taxa de Retenção",
+        # title_text="Análise de Cohort - Taxa de Retenção",
         height=700,
         width=1400,  # Aumentar largura para acomodar novas colunas
         yaxis=dict(
@@ -635,6 +973,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         row=1, col=2
     )
 
+
     # Ajustar margens
     fig.update_layout(margin=dict(l=50, r=50, t=100, b=100))
     fig.update_xaxes(showgrid=False)
@@ -644,6 +983,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
     st.plotly_chart(fig, use_container_width=True)
     
     return
+
 
 def sideBar():
     with st.sidebar:
@@ -666,5 +1006,6 @@ def sideBar():
     if selected=="Cohort Analysis":
         st.subheader(f"{selected} :blue-badge[Comercial] :green-badge[Pipeline Closer]")
         cohort()
+
 
 sideBar()
