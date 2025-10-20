@@ -6,7 +6,7 @@ DEAL_COL = "Nome do negócio"  # coluna que identifica o negócio
 CANAL_COL = "Canal"  # coluna com o canal
 FATURAMENTO_COL = "Faturamento Anual"  # coluna com faturamento anual
 # Coluna que contém o valor do contrato (coloque o nome exato da sua planilha aqui)
-CONTRACT_COL = "Valor previsto"  # <--- ajuste este nome conforme a sua planilha
+CONTRACT_COL = "Valor"  # <--- ajuste este nome conforme a sua planilha
 MEETING_COL = "Date entered \"Reunião realizada (SQL) (Closer - Pipeline de Vendas)\""  # coluna que contém a data em que entrou na fase 'reunião realizada'
 CLOSED_COL = "Date entered \"Fechado verbalmente  (Oportunidade) (Closer - Pipeline de Vendas)\""  # coluna que contém a data em que fechou
 # Strings de status que serão usadas na coluna 'Status' do resultado
@@ -19,6 +19,9 @@ OUTPUT_DATE_COL = "Data do Status"
 OUTPUT_CONTRACT_COL = "Valor do Contrato"
 OUTPUT_FATURAMENTO_COL = "Faturamento Anual"
 LOST_DATE_COL = "Date entered \"Perdidos Closer (Closer - Pipeline de Vendas)\""
+# NOVO: Colunas para verificar se negócio voltou após perdido
+NEGOTIATION_COL = "Date entered \"Em negociação (Oportunidade) (Closer - Pipeline de Vendas)\""
+CLOSING_COL = "Date entered \"Fechamento (Oportunidade) (Closer - Pipeline de Vendas)\""
 
 
 # Import necessário
@@ -170,7 +173,9 @@ def process_report(file_path: str,
                    output_date_col: str = OUTPUT_DATE_COL,
                    output_contract_col: str = OUTPUT_CONTRACT_COL,
                    output_faturamento_col: str = OUTPUT_FATURAMENTO_COL,
-                   lost_date_col: str = LOST_DATE_COL):
+                   lost_date_col: str = LOST_DATE_COL,
+                   negotiation_col: str = NEGOTIATION_COL,
+                   closing_col: str = CLOSING_COL):
     """
     Processa o arquivo e retorna um DataFrame com colunas:
     Nome do negócio | Canal | Faturamento Anual | Valor do Contrato | Status | Data do Status
@@ -185,6 +190,13 @@ def process_report(file_path: str,
     - `canal_col`, `faturamento_col` e `contract_col` são extraídos como o primeiro valor não-nulo encontrado para o negócio.
     - A coluna de saída de data está formatada como string 'DD/MM/YYYY'.
     - A coluna de contrato será convertida em numérica (float). Se não for possível, ficará NaN e será substituída por 0 no final.
+    - NOVO: Determina o status final do negócio baseado na data mais recente entre:
+      - Fechado verbalmente (CLOSED_COL)
+      - Perdido (LOST_DATE_COL)
+      - Em negociação (NEGOTIATION_COL)
+      - Fechamento (CLOSING_COL)
+    - NOVO: Se CLOSED_COL ou LOST_DATE_COL forem iguais a MEETING_COL, cria duas entradas com a mesma data
+      e define o status final conforme a fase (Fechado ou Perdido).
     """
     p = Path(file_path)
     if not p.exists():
@@ -203,7 +215,7 @@ def process_report(file_path: str,
 
 
     # Normalizar colunas de data para datetime (não string ainda)
-    for c in (meeting_col, closed_col, lost_date_col):
+    for c in (meeting_col, closed_col, lost_date_col, negotiation_col, closing_col):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
 
@@ -247,39 +259,137 @@ def process_report(file_path: str,
                 contract_val = float(c_non_null.iloc[0])
 
 
-        # obter a primeira (menor) data para meeting_col, closed_col e lost_date_col
+        # obter a primeira (menor) data para meeting_col e as datas máximas/mais recentes para as demais
         meet_date = pd.NaT
         close_date = pd.NaT
         lost_date = pd.NaT
+        negotiation_date = pd.NaT
+        closing_date = pd.NaT
+        
         if meeting_col in g.columns:
             meet_dates = pd.to_datetime(g[meeting_col], errors="coerce").dropna()
             if not meet_dates.empty:
                 meet_date = meet_dates.min()
+                
         if closed_col in g.columns:
             close_dates = pd.to_datetime(g[closed_col], errors="coerce").dropna()
             if not close_dates.empty:
-                close_date = close_dates.min()
+                close_date = close_dates.max()  # Pegar a mais recente
+                
         if lost_date_col in g.columns:
             lost_dates = pd.to_datetime(g[lost_date_col], errors="coerce").dropna()
             if not lost_dates.empty:
-                lost_date = lost_dates.min()
+                lost_date = lost_dates.max()  # Pegar a mais recente
+        
+        if negotiation_col in g.columns:
+            negotiation_dates = pd.to_datetime(g[negotiation_col], errors="coerce").dropna()
+            if not negotiation_dates.empty:
+                negotiation_date = negotiation_dates.max()  # Pega a mais recente
+                
+        if closing_col in g.columns:
+            closing_dates = pd.to_datetime(g[closing_col], errors="coerce").dropna()
+            if not closing_dates.empty:
+                closing_date = closing_dates.max()  # Pega a mais recente
+
+
+        # NOVO: Verificar se CLOSED_COL ou LOST_DATE_COL são iguais a MEETING_COL
+        closed_equals_meeting = False
+        lost_equals_meeting = False
+        
+        if pd.notnull(meet_date) and pd.notnull(close_date):
+            # Comparar apenas a data (sem hora) para evitar problemas de precisão
+            if meet_date.date() == close_date.date():
+                closed_equals_meeting = True
+        
+        if pd.notnull(meet_date) and pd.notnull(lost_date):
+            # Comparar apenas a data (sem hora) para evitar problemas de precisão
+            if meet_date.date() == lost_date.date():
+                lost_equals_meeting = True
+
+
+        # NOVO: Determinar o status final baseado na data mais recente entre TODAS as fases
+        # Coletar todas as datas disponíveis com seus respectivos status
+        status_dates = []
+        
+        if pd.notnull(close_date):
+            status_dates.append(('CLOSED', close_date))
+        
+        if pd.notnull(lost_date):
+            status_dates.append(('LOST', lost_date))
+        
+        if pd.notnull(negotiation_date):
+            status_dates.append(('NEGOTIATION', negotiation_date))
+        
+        if pd.notnull(closing_date):
+            status_dates.append(('CLOSING', closing_date))
+        
+        # Determinar qual é o status mais recente
+        is_really_closed = False
+        is_really_lost = False
+        
+        # CASO ESPECIAL: Se fechado ou perdido são iguais à reunião, têm prioridade
+        if closed_equals_meeting:
+            is_really_closed = True
+            is_really_lost = False
+        elif lost_equals_meeting:
+            is_really_closed = False
+            is_really_lost = True
+        # CASO NORMAL: Verificar data mais recente
+        elif status_dates:
+            # Ordenar por data (mais recente primeiro)
+            status_dates.sort(key=lambda x: x[1], reverse=True)
+            most_recent_status, most_recent_date = status_dates[0]
+            
+            # Definir o status final baseado na fase mais recente
+            if most_recent_status == 'CLOSED':
+                is_really_closed = True
+                is_really_lost = False
+            elif most_recent_status == 'LOST':
+                is_really_closed = False
+                is_really_lost = True
+            elif most_recent_status in ['NEGOTIATION', 'CLOSING']:
+                # Se a fase mais recente é negociação ou fechamento (mas não fechado verbal),
+                # o negócio está em aberto (restante)
+                is_really_closed = False
+                is_really_lost = False
 
 
         # Regras de inclusão de linhas
         # 1) Se existir meet_date, cria primeira entrada com status_meeting
         if pd.notnull(meet_date):
-            result_rows.append({deal_col: deal, canal_col: canal_val, faturamento_col: faturamento_val, contract_col: contract_val, "Status": status_meeting, output_date_col: meet_date})
-            # 2) Se houver close_date E existir meet_date, cria segunda entrada com status_closed
-            if pd.notnull(close_date):
-                result_rows.append({deal_col: deal, canal_col: canal_val, faturamento_col: faturamento_val, contract_col: contract_val, "Status": status_closed, output_date_col: close_date})
-        # 3) Se NÃO existir meet_date mas existir close_date: NÃO INCLUI (regra solicitada)
-        
-        # 4) Se existir lost_date, cria entrada com status_lost, APENAS SE JÁ NÃO EXISTIR UM "Fechado" PARA O MESMO NEGÓCIO
-        if pd.notnull(lost_date):
-            has_closed = any(row for row in result_rows if row[deal_col] == deal and row["Status"] == status_closed)
-            meeting_before_lost = pd.notnull(meet_date) and (lost_date > meet_date)
-            if not has_closed and meeting_before_lost:
-                result_rows.append({deal_col: deal, canal_col: canal_val, faturamento_col: faturamento_val, contract_col: contract_val, "Status": status_lost, output_date_col: lost_date})
+            result_rows.append({
+                deal_col: deal, 
+                canal_col: canal_val, 
+                faturamento_col: faturamento_val, 
+                contract_col: contract_val, 
+                "Status": status_meeting, 
+                output_date_col: meet_date
+            })
+            
+            # 2) Se está realmente fechado, cria segunda entrada com status_closed
+            if is_really_closed:
+                result_rows.append({
+                    deal_col: deal, 
+                    canal_col: canal_val, 
+                    faturamento_col: faturamento_val, 
+                    contract_col: contract_val, 
+                    "Status": status_closed, 
+                    output_date_col: close_date
+                })
+            
+            # 3) Se está realmente perdido, cria entrada com status_lost
+            # APENAS SE existir reunião antes ou igual ao perdido
+            if is_really_lost:
+                meeting_before_or_equal_lost = pd.notnull(meet_date) and (lost_date >= meet_date)
+                if meeting_before_or_equal_lost:
+                    result_rows.append({
+                        deal_col: deal, 
+                        canal_col: canal_val, 
+                        faturamento_col: faturamento_val, 
+                        contract_col: contract_val, 
+                        "Status": status_lost, 
+                        output_date_col: lost_date
+                    })
 
 
     out = pd.DataFrame(result_rows)
@@ -452,11 +562,20 @@ def cohort():
             df[date_column] = pd.to_datetime(df[date_column], format='%d/%m/%Y', errors='coerce')
 
 
-            # Filtro por intervalo de datas (opcional)
-            date_filter = st.sidebar.date_input("Selecione o intervalo de datas:", [], format="DD/MM/YYYY")
+            # CORRIGIDO: Filtro por intervalo de datas (APENAS para safras - Reunião realizada SQL)
+            date_filter = st.sidebar.date_input("Selecione o intervalo de datas da safra:", [], format="DD/MM/YYYY")
             date_filter = [pd.to_datetime(date) for date in date_filter] if date_filter else None
+            
             if date_filter and len(date_filter) == 2:
-                df = df[(df[date_column] >= date_filter[0]) & (df[date_column] <= date_filter[1])]
+                # Identificar os clientes (negócios) que têm reunião realizada no intervalo selecionado
+                df_meetings = df[df['Status'] == 'Reunião realizada SQL'].copy()
+                clients_in_date_range = df_meetings[
+                    (df_meetings[date_column] >= date_filter[0]) & 
+                    (df_meetings[date_column] <= date_filter[1])
+                ][client_column].unique()
+                
+                # Filtrar o DataFrame completo mantendo TODOS os status desses clientes
+                df = df[df[client_column].isin(clients_in_date_range)]
 
 
             # Selecionar período para a coorte
@@ -531,6 +650,32 @@ def cohort():
             # Converter para Series e reindexar
             cohort_avg_days = pd.Series(cohort_avg_days).reindex(all_cohorts, fill_value=0)
             
+            # NOVO: Calcular Ticket Médio e Ticket Acumulado por cohort
+            cohort_avg_ticket = {}
+            cohort_total_ticket = {}
+            
+            for cohort in all_cohorts:
+                # Pegar apenas os negócios fechados dessa cohort
+                cohort_closed_deals = df_fechados[df_fechados['cohort'] == cohort]
+                
+                if not cohort_closed_deals.empty and 'Valor do Contrato' in cohort_closed_deals.columns:
+                    # Ticket Médio: média do valor dos contratos fechados
+                    valores = cohort_closed_deals['Valor do Contrato'].dropna()
+                    if len(valores) > 0:
+                        cohort_avg_ticket[cohort] = valores.mean()
+                        # Ticket Acumulado: soma total dos valores dos contratos fechados
+                        cohort_total_ticket[cohort] = valores.sum()
+                    else:
+                        cohort_avg_ticket[cohort] = 0
+                        cohort_total_ticket[cohort] = 0
+                else:
+                    cohort_avg_ticket[cohort] = 0
+                    cohort_total_ticket[cohort] = 0
+            
+            # Converter para Series e reindexar
+            cohort_avg_ticket = pd.Series(cohort_avg_ticket).reindex(all_cohorts, fill_value=0)
+            cohort_total_ticket = pd.Series(cohort_total_ticket).reindex(all_cohorts, fill_value=0)
+            
             # Agrupar considerando apenas fechados
             df_grouped = df_fechados.groupby(['cohort', 'ano_cohort']).agg(n_customers1=(client_column, 'nunique')).reset_index(drop=False)
             df_grouped['period_number'] = (df_grouped.ano_cohort - df_grouped.cohort).apply(attrgetter('n'))
@@ -550,11 +695,11 @@ def cohort():
             # Adicionar toggle para alternar entre porcentagem e valores absolutos
             show_percentage = st.toggle('Mostrar valores em porcentagem', value=False)
             
-            # Criar gráfico interativo com Plotly - NOVO: passar métricas adicionais incluindo tempo médio
+            # Criar gráfico interativo com Plotly - NOVO: passar métricas adicionais incluindo ticket médio e acumulado
             if show_percentage:
-                create_cohort_heatmap_plotly(retention_matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, is_percentage=True)
+                create_cohort_heatmap_plotly(retention_matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, cohort_avg_ticket, cohort_total_ticket, is_percentage=True)
             else:
-                create_cohort_heatmap_plotly(cohort_pivot, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, is_percentage=False)
+                create_cohort_heatmap_plotly(cohort_pivot, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, cohort_avg_ticket, cohort_total_ticket, is_percentage=False)
 
             # NOVO: Adicionar seção de detalhamento de clientes por métrica
             st.markdown("---")
@@ -657,21 +802,18 @@ def cohort():
         st.info("Aguardando o upload do Excel do Hubspot.")
 
 
-def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, is_percentage=True):
+
+# MODIFICAÇÃO 3: Função create_cohort_heatmap_plotly() - adicionar os novos parâmetros e subplots
+def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, cohort_avg_ticket, cohort_total_ticket, is_percentage=True):
     # Preparar dados para o gráfico
     cohort_labels = matrix.index.astype(str).tolist()
-    # keep the original column values (these are the actual period numbers, may be non-contiguous)
     period_cols = list(matrix.columns)
-    # Ensure numeric period columns (they should be ints), attempt to coerce
+    
     try:
         period_ints = [int(x) for x in period_cols]
     except Exception:
-        # fallback: use positional indices if coercion fails
         period_ints = list(range(len(period_cols)))
 
-
-    # Ensure we always show up to period 5 (user request). Compute the full range to include
-    # any existing max period or 5, whichever is larger.
     if period_ints:
         min_p = min(period_ints)
         max_p = max(period_ints)
@@ -681,18 +823,11 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
     desired_max = max(max_p, 5)
     full_periods = list(range(min_p, desired_max + 1))
 
-
-    # Reindex the matrix to include missing period columns (filled with NaN). This ensures
-    # the heatmap has a column for period 5 even if there is no data for it.
     matrix = matrix.reindex(columns=full_periods)
 
-
-    # Update period_cols and labels to the full range
     period_cols = full_periods
-    # string labels for axis display
     period_labels = [str(col) for col in period_cols]
     
-    # NOVO: Criar labels para o sales cycle (em dias)
     sales_cycle_labels = []
     for period in period_cols:
         if period == 0:
@@ -700,13 +835,9 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         elif period == 1:
             sales_cycle_labels.append("30-60")
         else:
-            # Para período 2+: calcular intervalos de 30 em 30 dias
             inicio = 30 * period
             fim = 30 * (period + 1)
             sales_cycle_labels.append(f"{inicio}-{fim}")
-    
-    # NOVO: Criar uma figura com subplots expandida: 5 colunas
-
 
     selected_metrics = st.multiselect(
         "Selecione as métricas adicionais para exibir:", 
@@ -715,26 +846,13 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         key="additional_metrics"
     )
 
-
-    # Calcular número de colunas dinamicamente
     num_metrics = len(selected_metrics)
-    total_cols = 2 + num_metrics  # 2 colunas fixas + métricas selecionadas
+    total_cols = 2 + num_metrics
 
-
-    # Calcular column_widths dinamicamente
-    fixed_widths = [0.05, 0.65]  # Larguras das duas primeiras colunas fixas
-    metric_widths = [0.06] * num_metrics  # 0.06 para cada métrica selecionada
+    fixed_widths = [0.05, 0.65]
+    metric_widths = [0.06] * num_metrics
     column_widths = fixed_widths + metric_widths
 
-
-    # num_metrics
-    # total_cols
-    # fixed_widths
-    # metric_widths
-    # column_widths
-
-
-    # Criar subplot
     fig = make_subplots(
         rows=1, 
         cols=total_cols,
@@ -743,7 +861,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         horizontal_spacing=0.005,
     )
     
-    # Adicionar heatmap para o tamanho da coorte (coluna 1)
+    # Coluna 1: Tamanho da safra
     cohort_size_values = cohort_size.values.reshape(-1, 1)
     
     fig.add_trace(
@@ -762,10 +880,9 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         row=1, col=1
     )
     
-    # Adicionar heatmap para a matriz de retenção (coluna 2)
+    # Coluna 2: Matriz principal
     mask = np.isnan(matrix.values)
     
-    # Criar textos para exibição
     text_matrix = []
     hover_matrix = []
     
@@ -816,17 +933,14 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         row=1, col=2
     )
     
-    
-    # NOVO: CORREÇÃO - Adicionar coluna 3 - % Conversão
-    conversion_values = cohort_conversion.values.reshape(-1, 1)
-    # Criar texto formatado manualmente
-    conversion_text = [[f"{val:.1f}%" for val in conversion_values.flatten()]]
-    conversion_text = list(zip(*conversion_text))  # Transpor para formato correto
-    
-    base_col = 3  # Coluna base para métricas adicionais
+    base_col = 3
 
-
+    # Tx de Conversão
     if "Tx de Conversão" in selected_metrics:
+        conversion_values = cohort_conversion.values.reshape(-1, 1)
+        conversion_text = [[f"{val:.1f}%" for val in conversion_values.flatten()]]
+        conversion_text = list(zip(*conversion_text))
+        
         col_position = base_col + selected_metrics.index("Tx de Conversão")
         fig.add_trace(
             go.Heatmap(
@@ -844,14 +958,12 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             row=1, col=col_position
         )
     
-    # NOVO: CORREÇÃO - Adicionar coluna 4 - Qtd Fechados
-    closed_values = cohort_closed.values.reshape(-1, 1)
-    # Criar texto formatado manualmente
-    closed_text = [[str(int(val)) for val in closed_values.flatten()]]
-    closed_text = list(zip(*closed_text))  # Transpor
-
-
+    # Qtd Fechados
     if "Qtd Fechados" in selected_metrics:
+        closed_values = cohort_closed.values.reshape(-1, 1)
+        closed_text = [[str(int(val)) for val in closed_values.flatten()]]
+        closed_text = list(zip(*closed_text))
+
         col_position = base_col + selected_metrics.index("Qtd Fechados")
         fig.add_trace(
             go.Heatmap(
@@ -869,14 +981,12 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             row=1, col=col_position
         )
     
-    # NOVO: CORREÇÃO - Adicionar coluna 5 - Qtd Perdidos
-    lost_values = cohort_lost.values.reshape(-1, 1)
-    # Criar texto formatado manualmente
-    lost_text = [[str(int(val)) for val in lost_values.flatten()]]
-    lost_text = list(zip(*lost_text))  # Transpor
-
-
+    # Qtd Perdidos
     if "Qtd Perdidos" in selected_metrics:
+        lost_values = cohort_lost.values.reshape(-1, 1)
+        lost_text = [[str(int(val)) for val in lost_values.flatten()]]
+        lost_text = list(zip(*lost_text))
+
         col_position = base_col + selected_metrics.index("Qtd Perdidos")
         fig.add_trace(
             go.Heatmap(
@@ -894,15 +1004,12 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             row=1, col=col_position
         )
 
-
-    # NOVO: CORREÇÃO - Adicionar coluna 6 - Qtd Restante
-    remaining_values = cohort_remaining.values.reshape(-1, 1)
-    # Criar texto formatado manualmente
-    remaining_text = [[str(int(val)) for val in remaining_values.flatten()]]
-    remaining_text = list(zip(*remaining_text))  # Transpor
-
-
+    # Qtd Restante
     if "Qtd Restante" in selected_metrics:
+        remaining_values = cohort_remaining.values.reshape(-1, 1)
+        remaining_text = [[str(int(val)) for val in remaining_values.flatten()]]
+        remaining_text = list(zip(*remaining_text))
+
         col_position = base_col + selected_metrics.index("Qtd Restante")
         fig.add_trace(
             go.Heatmap(
@@ -920,13 +1027,12 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             row=1, col=col_position
         )
 
-    # NOVO: Adicionar coluna - Tempo Médio de Fechamento
-    avg_days_values = cohort_avg_days.values.reshape(-1, 1)
-    # Criar texto formatado manualmente
-    avg_days_text = [[f"{val:.0f}d" if val > 0 else "-" for val in avg_days_values.flatten()]]
-    avg_days_text = list(zip(*avg_days_text))  # Transpor
-
+    # Tempo Médio
     if "Tempo Médio" in selected_metrics:
+        avg_days_values = cohort_avg_days.values.reshape(-1, 1)
+        avg_days_text = [[f"{val:.0f}d" if val > 0 else "-" for val in avg_days_values.flatten()]]
+        avg_days_text = list(zip(*avg_days_text))
+
         col_position = base_col + selected_metrics.index("Tempo Médio")
         fig.add_trace(
             go.Heatmap(
@@ -944,12 +1050,57 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             row=1, col=col_position
         )
 
+    # NOVO: Ticket Médio
+    if "Ticket Médio" in selected_metrics:
+        avg_ticket_values = cohort_avg_ticket.values.reshape(-1, 1)
+        # Formatar em milhares (K)
+        avg_ticket_text = [[f"R$ {val/1000:.0f}K" if val > 0 else "-" for val in avg_ticket_values.flatten()]]
+        avg_ticket_text = list(zip(*avg_ticket_text))
 
-    # Atualizar layout
+        col_position = base_col + selected_metrics.index("Ticket Médio")
+        fig.add_trace(
+            go.Heatmap(
+                z=avg_ticket_values,
+                x=['Tk Médio'],
+                y=cohort_labels,
+                text=avg_ticket_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'<b>Ticket Médio: R$ {val:,.2f}</b>'.replace(',', '_').replace('.', ',').replace('_', '.') if val > 0 else '<b>Sem dados</b>' for val in avg_ticket_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
+
+    # NOVO: Ticket Acumulado
+    if "Ticket Acumulado" in selected_metrics:
+        total_ticket_values = cohort_total_ticket.values.reshape(-1, 1)
+        # Formatar em milhares (K)
+        total_ticket_text = [[f"R$ {val/1000:.0f}K" if val > 0 else "-" for val in total_ticket_values.flatten()]]
+        total_ticket_text = list(zip(*total_ticket_text))
+
+        col_position = base_col + selected_metrics.index("Ticket Acumulado")
+        fig.add_trace(
+            go.Heatmap(
+                z=total_ticket_values,
+                x=['Tk Acum.'],
+                y=cohort_labels,
+                text=total_ticket_text,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                colorscale=[[0, 'white'], [1, 'white']],
+                showscale=False,
+                hoverinfo='text',
+                hovertext=[[f'<b>Ticket Acumulado: R$ {val:,.2f}</b>'.replace(',', '_').replace('.', ',').replace('_', '.') if val > 0 else '<b>Sem dados</b>' for val in total_ticket_values.flatten()]],
+            ),
+            row=1, col=col_position
+        )
+
     fig.update_layout(
-        # title_text="Análise de Cohort - Taxa de Retenção",
         height=700,
-        width=1400,  # Aumentar largura para acomodar novas colunas
+        width=1400,
         yaxis=dict(
             title='',
             autorange='reversed',
@@ -963,7 +1114,6 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         ),
     )
     
-    # Adicionar segundo eixo X com sales cycle
     fig.update_xaxes(
         title='# sales cycle (dias)',
         tickmode='array',
@@ -973,13 +1123,10 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         row=1, col=2
     )
 
-
-    # Ajustar margens
     fig.update_layout(margin=dict(l=50, r=50, t=100, b=100))
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=False)
     
-    # Exibir o gráfico no Streamlit
     st.plotly_chart(fig, use_container_width=True)
     
     return
