@@ -873,7 +873,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
     selected_metrics = st.multiselect(
         "Selecione as métricas adicionais para exibir:", 
         options=["Tx de Conversão", "Qtd Fechados", "Qtd Perdidos", "Qtd Restante", "Tempo Médio", "Ticket Médio", "Ticket Acumulado"],
-        default=["Tx de Conversão", "Qtd Fechados", "Qtd Perdidos", "Qtd Restante", "Tempo Médio", "Ticket Médio", "Ticket Acumulado"],
+        default=["Tx de Conversão", "Qtd Fechados", "Qtd Restante", "Tempo Médio"],
         key="additional_metrics"
     )
 
