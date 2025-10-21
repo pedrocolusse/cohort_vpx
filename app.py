@@ -724,9 +724,16 @@ def cohort():
             else:
                 create_cohort_heatmap_plotly(cohort_pivot, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, cohort_avg_ticket, cohort_total_ticket, is_percentage=False)
 
-            # NOVO: Adicionar seção de detalhamento de clientes por métrica
+                 # NOVO: Adicionar seção de detalhamento de clientes por métrica
             st.markdown("---")
             st.subheader("📋 Detalhamento de Clientes por Métrica")
+            
+            # NOVO: Toggle para escolher tipo de visualização
+            view_by_status_date = st.toggle(
+                "Visualizar por data do status (ao invés de data da safra)",
+                value=False,
+                help="Ativado: mostra negócios pela data em que mudaram de status. Desativado: mostra negócios pela data da safra (reunião realizada)."
+            )
             
             # Criar seletor de métrica para visualizar detalhes
             metric_to_show = st.selectbox(
@@ -784,21 +791,58 @@ def cohort():
                         lambda x: f"R$ {x:,.2f}".replace(',', '_').replace('.', ',').replace('_', '.') if pd.notnull(x) and x > 0 else "-"
                     )
                 
-                # Adicionar filtros por cohort
-                st.markdown("**Filtrar por safra (cohort):**")
-                
-                # Criar mapeamento de cohorts formatados
-                cohort_mapping = {}
-                for cohort in sorted(detail_df['cohort'].dropna().unique()):
-                    formatted = format_period(cohort, periodo)
-                    cohort_mapping[formatted] = cohort
-                
-                cohort_options = ['Todas'] + list(cohort_mapping.keys())
-                selected_cohort_filter = st.selectbox("Selecione a safra:", options=cohort_options, key="cohort_filter")
-                
-                if selected_cohort_filter != 'Todas':
-                    original_cohort = cohort_mapping[selected_cohort_filter]
-                    detail_display = detail_display[detail_df['cohort'] == original_cohort]
+                # NOVO: Lógica de filtro baseada no toggle
+                if view_by_status_date:
+                    # Visualização por DATA DO STATUS
+                    st.markdown("**Filtrar por período do status:**")
+                    
+                    # Criar coluna auxiliar para o período do status
+                    detail_df['status_period'] = pd.to_datetime(detail_df[date_column], format='%d/%m/%Y', errors='coerce').dt.to_period(periodo)
+                    
+                    # Obter todos os períodos únicos de status
+                    status_periods = sorted(detail_df['status_period'].dropna().unique())
+                    
+                    # Criar mapeamento de períodos formatados
+                    period_mapping = {}
+                    for period in status_periods:
+                        formatted = format_period(period, periodo)
+                        period_mapping[formatted] = period
+                    
+                    period_options = ['Todos'] + list(period_mapping.keys())
+                    selected_period_filter = st.selectbox(
+                        "Selecione o período do status:", 
+                        options=period_options, 
+                        key="status_period_filter"
+                    )
+                    
+                    if selected_period_filter != 'Todos':
+                        original_period = period_mapping[selected_period_filter]
+                        # Filtrar detail_display usando o índice de detail_df
+                        mask = detail_df['status_period'] == original_period
+                        detail_display = detail_display[mask]
+                        
+                else:
+                    # Visualização por DATA DA SAFRA (lógica original)
+                    st.markdown("**Filtrar por safra (cohort):**")
+                    
+                    # Criar mapeamento de cohorts formatados
+                    cohort_mapping = {}
+                    for cohort in sorted(detail_df['cohort'].dropna().unique()):
+                        formatted = format_period(cohort, periodo)
+                        cohort_mapping[formatted] = cohort
+                    
+                    cohort_options = ['Todas'] + list(cohort_mapping.keys())
+                    selected_cohort_filter = st.selectbox(
+                        "Selecione a safra:", 
+                        options=cohort_options, 
+                        key="cohort_filter"
+                    )
+                    
+                    if selected_cohort_filter != 'Todas':
+                        original_cohort = cohort_mapping[selected_cohort_filter]
+                        # Filtrar detail_display usando o índice de detail_df
+                        mask = detail_df['cohort'] == original_cohort
+                        detail_display = detail_display[mask]
                 
                 # Exibir tabela
                 st.dataframe(
@@ -809,14 +853,72 @@ def cohort():
                 
                 # Botão para download
                 csv = detail_display.to_csv(index=False).encode('utf-8-sig')
+                download_label = f"⬇️ Baixar lista de {metric_to_show}"
+                if view_by_status_date:
+                    download_label += " (por data do status)"
+                else:
+                    download_label += " (por safra)"
+                    
                 st.download_button(
-                    label=f"⬇️ Baixar lista de {metric_to_show} em CSV",
+                    label=download_label + " em CSV",
                     data=csv,
-                    file_name=f"detalhamento_{metric_to_show.lower().replace(' ', '_')}.csv",
+                    file_name=f"detalhamento_{metric_to_show.lower().replace(' ', '_')}_{('status' if view_by_status_date else 'safra')}.csv",
                     mime="text/csv"
                 )
             else:
                 st.info("Nenhum cliente encontrado para esta métrica com os filtros aplicados.")
+
+            st.markdown("---")
+            st.subheader("Análise de Clientes por Métrica :blue-badge[Comercial] :green-badge[Pipeline Closer]")
+            # Gráfico de barras não empilhadas para análise de quantidade de Fechados e Perdidos
+            # Eixo X: Data do Status (mensal)
+            # Eixo Y: Quantidade de clientes
+            # Filtros: Canal, Programa e Data do Status
+            # Legenda: Status (Fechado, Perdido), não incluir Restante no gráfico
+            try:
+                # Preparar dados para o gráfico
+                df_analysis = df[df['Status'].isin(['Fechado', 'Perdido'])].copy()
+                df_analysis['Data_Mes'] = df_analysis[date_column].dt.to_period('M').dt.to_timestamp()
+                
+                analysis_grouped = df_analysis.groupby(['Data_Mes', 'Status'])[client_column].nunique().reset_index()
+                
+                # Criar gráfico de barras com Plotly
+                # ADICIONAR: Rótulos de dados acima das barras
+                # Perdido #D70248
+                # Fechado #12A099
+                fig_analysis = px.bar(
+                    analysis_grouped,
+                    x='Data_Mes',
+                    y=client_column,
+                    color='Status',
+                    barmode='group',
+                    color_discrete_map={
+                        'Fechado': '#12A099',
+                        'Perdido': '#D70248'
+                    },
+                    labels={
+                        'Data_Mes': 'Mês',
+                        client_column: 'Quantidade de Clientes',
+                        'Status': 'Status'
+                    },
+                    title='Análise Mensal de Clientes Fechados e Perdidos'
+                )
+
+                fig_analysis.update_traces(texttemplate='%{y}', textposition='outside', textfont_size=16)
+
+                fig_analysis.update_layout(
+                    height=600,
+                    width=1400
+                )
+                
+                fig_analysis.update_layout(xaxis=dict(dtick="M1", tickformat="%b\n%Y"))
+                
+                st.plotly_chart(fig_analysis, use_container_width=True)
+            except Exception as e:
+                st.error(f"Erro ao gerar gráfico de análise mensal: {str(e)}")
+                import traceback
+                st.error(traceback.format_exc())
+
 
 
         except Exception as e:
