@@ -178,25 +178,7 @@ def process_report(file_path: str,
                    closing_col: str = CLOSING_COL):
     """
     Processa o arquivo e retorna um DataFrame com colunas:
-    Nome do negócio | Canal | Faturamento Anual | Valor do Contrato | Status | Data do Status
-
-
-    Regras aplicadas:
-    - Para cada negócio, busca a primeira data (mais antiga) encontrada na coluna `meeting_col` (se existir)
-      e, separadamente, a primeira data encontrada na coluna `closed_col`.
-    - Gera até 2 linhas por negócio: primeira com a data de `meeting_col` e segunda com `closed_col` quando existirem
-      E APENAS se a primeira (meeting_col) existir. Se houver somente fechamento sem reunião, o negócio é excluído.
-    - Se apenas `meeting_col` existir, produz somente a primeira linha.
-    - `canal_col`, `faturamento_col` e `contract_col` são extraídos como o primeiro valor não-nulo encontrado para o negócio.
-    - A coluna de saída de data está formatada como string 'DD/MM/YYYY'.
-    - A coluna de contrato será convertida em numérica (float). Se não for possível, ficará NaN e será substituída por 0 no final.
-    - NOVO: Determina o status final do negócio baseado na data mais recente entre:
-      - Fechado verbalmente (CLOSED_COL)
-      - Perdido (LOST_DATE_COL)
-      - Em negociação (NEGOTIATION_COL)
-      - Fechamento (CLOSING_COL)
-    - NOVO: Se CLOSED_COL ou LOST_DATE_COL forem iguais a MEETING_COL, cria duas entradas com a mesma data
-      e define o status final conforme a fase (Fechado ou Perdido).
+    Nome do negócio | Canal | Programa | Faturamento Anual | Valor do Contrato | Status | Data do Status
     """
     p = Path(file_path)
     if not p.exists():
@@ -205,7 +187,6 @@ def process_report(file_path: str,
 
     # Leitura
     df = pd.read_excel(p, sheet_name=sheet, engine="openpyxl")
-    # print(f"Arquivo lido com {len(df):,} linhas. Colunas detectadas: {list(df.columns)}")
 
 
     # Conferir colunas pedidas (deal e canal obrigatórios)
@@ -233,7 +214,7 @@ def process_report(file_path: str,
         df['_faturamento_numeric_parsed'] = np.nan
 
 
-    # Agrupar por negócio e escolher a primeira (mais antiga) ocorrência das datas, canal, faturamento e contrato
+    # Agrupar por negócio e escolher a primeira (mais antiga) ocorrência das datas, canal, programa, faturamento e contrato
     result_rows = []
     grouped = df.groupby(deal_col, dropna=False)
     for deal, g in grouped:
@@ -243,6 +224,13 @@ def process_report(file_path: str,
             non_null = g[canal_col].dropna()
             if len(non_null) > 0:
                 canal_val = non_null.iloc[0]
+
+        # NOVO: programa: primeiro valor não-nulo encontrado
+        programa_val = None
+        if 'Programa' in g.columns:
+            non_null = g['Programa'].dropna()
+            if len(non_null) > 0:
+                programa_val = non_null.iloc[0]
 
         # faturamento: primeiro valor numérico não-nulo encontrado (se coluna existir)
         faturamento_val = np.nan
@@ -359,7 +347,8 @@ def process_report(file_path: str,
         if pd.notnull(meet_date):
             result_rows.append({
                 deal_col: deal, 
-                canal_col: canal_val, 
+                canal_col: canal_val,
+                'Programa': programa_val,  # NOVO: Adicionar programa
                 faturamento_col: faturamento_val, 
                 contract_col: contract_val, 
                 "Status": status_meeting, 
@@ -370,7 +359,8 @@ def process_report(file_path: str,
             if is_really_closed:
                 result_rows.append({
                     deal_col: deal, 
-                    canal_col: canal_val, 
+                    canal_col: canal_val,
+                    'Programa': programa_val,  # NOVO: Adicionar programa
                     faturamento_col: faturamento_val, 
                     contract_col: contract_val, 
                     "Status": status_closed, 
@@ -384,7 +374,8 @@ def process_report(file_path: str,
                 if meeting_before_or_equal_lost:
                     result_rows.append({
                         deal_col: deal, 
-                        canal_col: canal_val, 
+                        canal_col: canal_val,
+                        'Programa': programa_val,  # NOVO: Adicionar programa
                         faturamento_col: faturamento_val, 
                         contract_col: contract_val, 
                         "Status": status_lost, 
@@ -411,13 +402,16 @@ def process_report(file_path: str,
             out = out.rename(columns=rename_map)
 
 
-        # assegurar as colunas finais na ordem: deal, Canal, Faturamento Anual, Valor do Contrato, Status, Data do Status
-        final_cols = [deal_col, "Canal"]
+        # MODIFICADO: assegurar as colunas finais na ordem: deal, Canal, Programa, Faturamento Anual, Valor do Contrato, Status, Data do Status
+        final_cols = [deal_col, "Canal", "Programa"]
         if output_faturamento_col in out.columns:
             final_cols.append(output_faturamento_col)
         if output_contract_col in out.columns:
             final_cols.append(output_contract_col)
         final_cols.extend(["Status", output_date_col])
+        
+        # Filtrar apenas colunas que existem
+        final_cols = [col for col in final_cols if col in out.columns]
         out = out[final_cols]
 
         # garantir que a coluna de faturamento seja numérica e substituir NaN por 0
@@ -434,13 +428,13 @@ def process_report(file_path: str,
         out = out.sort_values([deal_col, output_date_col], na_position='last').reset_index(drop=True)
     else:
         # criar dataframe vazio com colunas corretas
-        cols = [deal_col, "Canal", "Status", output_date_col]
+        cols = [deal_col, "Canal", "Programa", "Status", output_date_col]
         # incluir coluna de faturamento mesmo vazia
         if faturamento_col:
-            cols.insert(2, output_faturamento_col)
+            cols.insert(3, output_faturamento_col)
         # incluir coluna de contrato mesmo vazia
         if contract_col:
-            cols.insert(3, output_contract_col)
+            cols.insert(4, output_contract_col)
         out = pd.DataFrame(columns=cols)
 
 
@@ -523,6 +517,14 @@ def cohort():
             selected_channels = st.sidebar.multiselect("Filtrar canais (Canal):", options=channels, default=channels)
             if selected_channels:
                 df = df[df['Canal'].isin(selected_channels)]
+
+            # NOVO: Filtrar por Programa via multiselect
+            if 'Programa' in df.columns:
+                programas = df['Programa'].dropna().unique().tolist()
+                if programas:
+                    selected_programas = st.sidebar.multiselect("Filtrar programas (Programa):", options=programas, default=programas)
+                    if selected_programas:
+                        df = df[df['Programa'].isin(selected_programas)]
 
             # NOVO: Filtrar por Faturamento Anual via select_slider
             if 'Faturamento Anual' in df.columns:
@@ -755,8 +757,8 @@ def cohort():
             
             # Exibir DataFrame com informações
             if not detail_df.empty:
-                # Reorganizar colunas para melhor visualização
-                display_cols = [client_column, 'Canal', 'Faturamento Anual', 'Valor do Contrato', 'Status', date_column]
+                # MODIFICADO: Reorganizar colunas para incluir Programa
+                display_cols = [client_column, 'Canal', 'Programa', 'Faturamento Anual', 'Valor do Contrato', 'Status', date_column]
                 display_cols = [col for col in display_cols if col in detail_df.columns]
                 
                 # Formatar valores monetários e datas
