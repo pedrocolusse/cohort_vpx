@@ -225,12 +225,14 @@ def process_report(file_path: str,
             if len(non_null) > 0:
                 canal_val = non_null.iloc[0]
 
-        # NOVO: programa: primeiro valor não-nulo encontrado
-        programa_val = None
+        # NOVO: programa: primeiro valor não-nulo encontrado, preenche com "Vazio" se não encontrar
+        programa_val = "Vazio"  # Valor padrão
         if 'Programa' in g.columns:
             non_null = g['Programa'].dropna()
             if len(non_null) > 0:
-                programa_val = non_null.iloc[0]
+                val = str(non_null.iloc[0]).strip()
+                if val and val.lower() not in ['', 'nan', 'none']:
+                    programa_val = val
 
         # faturamento: primeiro valor numérico não-nulo encontrado (se coluna existir)
         faturamento_val = np.nan
@@ -348,7 +350,7 @@ def process_report(file_path: str,
             result_rows.append({
                 deal_col: deal, 
                 canal_col: canal_val,
-                'Programa': programa_val,  # NOVO: Adicionar programa
+                'Programa': programa_val,  # NOVO: Adicionar programa (já com "Vazio" se necessário)
                 faturamento_col: faturamento_val, 
                 contract_col: contract_val, 
                 "Status": status_meeting, 
@@ -360,7 +362,7 @@ def process_report(file_path: str,
                 result_rows.append({
                     deal_col: deal, 
                     canal_col: canal_val,
-                    'Programa': programa_val,  # NOVO: Adicionar programa
+                    'Programa': programa_val,  # NOVO: Adicionar programa (já com "Vazio" se necessário)
                     faturamento_col: faturamento_val, 
                     contract_col: contract_val, 
                     "Status": status_closed, 
@@ -375,7 +377,7 @@ def process_report(file_path: str,
                     result_rows.append({
                         deal_col: deal, 
                         canal_col: canal_val,
-                        'Programa': programa_val,  # NOVO: Adicionar programa
+                        'Programa': programa_val,  # NOVO: Adicionar programa (já com "Vazio" se necessário)
                         faturamento_col: faturamento_val, 
                         contract_col: contract_val, 
                         "Status": status_lost, 
@@ -422,6 +424,10 @@ def process_report(file_path: str,
         if output_contract_col in out.columns:
             out[output_contract_col] = pd.to_numeric(out[output_contract_col], errors='coerce').fillna(0.0)
 
+        # NOVO: Garantir que Programa não tenha valores nulos/vazios
+        if 'Programa' in out.columns:
+            out['Programa'] = out['Programa'].fillna('Vazio')
+            out['Programa'] = out['Programa'].replace('', 'Vazio')
 
         # converter para datetime e formatar como string DD/MM/YYYY
         out[output_date_col] = pd.to_datetime(out[output_date_col], errors="coerce").dt.strftime('%d/%m/%Y')
@@ -446,6 +452,7 @@ def process_report(file_path: str,
 
 
     return df, out
+
 
 
 def cohort():
