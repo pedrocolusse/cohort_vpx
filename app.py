@@ -678,18 +678,32 @@ def cohort():
             
             # Agrupar considerando apenas fechados
             df_grouped = df_fechados.groupby(['cohort', 'ano_cohort']).agg(n_customers1=(client_column, 'nunique')).reset_index(drop=False)
-            df_grouped['period_number'] = (df_grouped.ano_cohort - df_grouped.cohort).apply(attrgetter('n'))
-
-
-            # Criar pivot table com os dados de fechados
-            cohort_pivot = df_grouped.pivot_table(index='cohort', columns='period_number', values='n_customers1')
+            
+            # CORREÇÃO: Verificar se há dados agrupados antes de calcular period_number
+            if not df_grouped.empty:
+                df_grouped['period_number'] = (df_grouped.ano_cohort - df_grouped.cohort).apply(attrgetter('n'))
+                # Criar pivot table com os dados de fechados
+                cohort_pivot = df_grouped.pivot_table(index='cohort', columns='period_number', values='n_customers1')
+            else:
+                # Se não houver fechados, criar pivot vazio
+                cohort_pivot = pd.DataFrame(index=all_cohorts, columns=[0])
             
             # CORREÇÃO: Reindexar o pivot para incluir todos os cohorts
             cohort_pivot = cohort_pivot.reindex(all_cohorts)
             
+            # CORREÇÃO: Preencher NaN com 0 no pivot
+            cohort_pivot = cohort_pivot.fillna(0)
+            
             # Usar o tamanho total da coorte para calcular a retenção
             cohort_size = cohort_sizes  # Agora já contém todos os cohorts
-            retention_matrix = cohort_pivot.divide(cohort_size, axis=0)
+            
+            # CORREÇÃO: Tratar divisão por zero na matriz de retenção
+            retention_matrix = cohort_pivot.copy()
+            for idx in retention_matrix.index:
+                if cohort_size[idx] > 0:
+                    retention_matrix.loc[idx] = cohort_pivot.loc[idx] / cohort_size[idx]
+                else:
+                    retention_matrix.loc[idx] = 0
 
 
             # Adicionar toggle para alternar entre porcentagem e valores absolutos
@@ -798,15 +812,30 @@ def cohort():
 
         except Exception as e:
             st.error(f"Erro na análise: {str(e)}")
+            import traceback
+            st.error(traceback.format_exc())
     else:
         st.info("Aguardando o upload do Excel do Hubspot.")
 
 
-
 # MODIFICAÇÃO 3: Função create_cohort_heatmap_plotly() - adicionar os novos parâmetros e subplots
 def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_closed, cohort_remaining, cohort_lost, cohort_avg_days, cohort_avg_ticket, cohort_total_ticket, is_percentage=True):
-    # Preparar dados para o gráfico
-    cohort_labels = matrix.index.astype(str).tolist()
+    # CORREÇÃO: Obter o tipo de período do session_state ou inferir da matriz
+    # Vamos inferir o tipo de período a partir do formato dos índices
+    if len(matrix.index) > 0:
+        first_cohort = str(matrix.index[0])
+        if 'Q' in first_cohort:
+            periodo_type = 'Q'
+        elif len(first_cohort) == 4:  # Apenas ano (ex: "2025")
+            periodo_type = 'Y'
+        else:
+            periodo_type = 'M'
+    else:
+        periodo_type = 'M'  # Default
+    
+    # Preparar dados para o gráfico - FORMATAR OS LABELS DAS SAFRAS
+    cohort_labels = [format_period(cohort, periodo_type) for cohort in matrix.index]
+    
     period_cols = list(matrix.columns)
     
     try:
@@ -880,19 +909,21 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         row=1, col=1
     )
     
-    # Coluna 2: Matriz principal
-    mask = np.isnan(matrix.values)
-    
+    # Coluna 2: Matriz principal - MODIFICADO PARA TRATAR ZEROS COMO TRANSPARENTES
+    # Criar textos para exibição e substituir valores 0 por NaN apenas para visualização
     text_matrix = []
     hover_matrix = []
     
+    # NOVO: Criar cópia da matriz e substituir 0 por NaN APENAS para visualização
     z_values = matrix.copy()
+    z_values = z_values.replace(0, np.nan)
     
     for i in range(matrix.shape[0]):
         text_row = []
         hover_row = []
         for j in range(matrix.shape[1]):
-            if not np.isnan(matrix.iloc[i, j]):
+            # Usar a matriz ORIGINAL (com zeros) para gerar texto e hover
+            if not pd.isna(matrix.iloc[i, j]) and matrix.iloc[i, j] > 0:
                 period_value = period_cols[j]
                 if is_percentage:
                     text_row.append(f"{matrix.iloc[i, j]:.0%}")
@@ -906,9 +937,14 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         text_matrix.append(text_row)
         hover_matrix.append(hover_row)
     
+    # Calcular zmax seguro
+    max_val = matrix.max().max()
+    if pd.isna(max_val) or max_val == 0:
+        max_val = 1  # Default para evitar erro
+    
     fig.add_trace(
         go.Heatmap(
-            z=z_values,
+            z=z_values,  # Usar matriz com NaN para cores
             x=period_labels,
             y=cohort_labels,
             text=text_matrix,
@@ -923,7 +959,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
                 ticks='outside'
             ),
             zmin=0,
-            zmax=1 if is_percentage else z_values.max().max(),
+            zmax=1 if is_percentage else max_val,
             connectgaps=False,
             hoverongaps=False,
             showscale=True,
@@ -1104,6 +1140,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
         yaxis=dict(
             title='',
             autorange='reversed',
+            type='category',  # NOVO: Forçar tipo categoria para evitar conversão automática de datas
         ),
         xaxis2=dict(
             title='# períodos',
@@ -1125,11 +1162,12 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
 
     fig.update_layout(margin=dict(l=50, r=50, t=100, b=100))
     fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(showgrid=False)
+    fig.update_xaxes(showgrid=False)
     
     st.plotly_chart(fig, use_container_width=True)
     
     return
+
 
 
 def sideBar():
