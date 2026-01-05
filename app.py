@@ -1003,6 +1003,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
     
     # Coluna 1: Tamanho da safra
     cohort_size_values = cohort_size.values.reshape(-1, 1)
+    cohort_size_flat = cohort_size.values.flatten()
     
     fig.add_trace(
         go.Heatmap(
@@ -1015,7 +1016,7 @@ def create_cohort_heatmap_plotly(matrix, cohort_size, cohort_conversion, cohort_
             colorscale=[[0, 'white'], [1, 'white']],
             showscale=False,
             hoverinfo='text',
-            hovertext=[[f'Tamanho da cohort: {int(val)}' for val in cohort_size_values]],
+            hovertext=[[f'Tamanho da cohort: {int(val)}' for val in cohort_size_flat]],
         ),
         row=1, col=1
     )
