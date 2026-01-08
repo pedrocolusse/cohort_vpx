@@ -7,8 +7,8 @@ CANAL_COL = "Canal"  # coluna com o canal
 FATURAMENTO_COL = "Faturamento Anual"  # coluna com faturamento anual
 # Coluna que contém o valor do contrato (coloque o nome exato da sua planilha aqui)
 CONTRACT_COL = "Valor"  # <--- ajuste este nome conforme a sua planilha
-MEETING_COL = "Date entered \"Reunião realizada (SQL) (Closer - Pipeline de Vendas)\""  # coluna que contém a data em que entrou na fase 'reunião realizada'
-CLOSED_COL = "Date entered \"Fechado verbalmente  (Oportunidade) (Closer - Pipeline de Vendas)\""  # coluna que contém a data em que fechou
+MEETING_COL = "Date entered \"Reunião realizada (SQL) (Closer)\""  # coluna que contém a data em que entrou na fase 'reunião realizada'
+CLOSED_COL = "Date entered \"Fechado verbalmente  (Oportunidade) (Closer)\""  # coluna que contém a data em que fechou
 # Strings de status que serão usadas na coluna 'Status' do resultado
 STATUS_MEETING = "Reunião realizada SQL"  # string para a primeira entrada (data 1)
 STATUS_CLOSED = "Fechado"  # string para a segunda entrada (data 2)
@@ -18,10 +18,10 @@ OUTPUT_DATE_COL = "Data do Status"
 # Nome da coluna de saída para valor do contrato no DataFrame final
 OUTPUT_CONTRACT_COL = "Valor do Contrato"
 OUTPUT_FATURAMENTO_COL = "Faturamento Anual"
-LOST_DATE_COL = "Date entered \"Perdidos Closer (Closer - Pipeline de Vendas)\""
+LOST_DATE_COL = "Date entered \"Perdidos Closer (Closer)\""
 # NOVO: Colunas para verificar se negócio voltou após perdido
-NEGOTIATION_COL = "Date entered \"Em negociação (Oportunidade) (Closer - Pipeline de Vendas)\""
-CLOSING_COL = "Date entered \"Fechamento (Oportunidade) (Closer - Pipeline de Vendas)\""
+NEGOTIATION_COL = "Date entered \"Em negociação (Oportunidade) (Closer)\""
+CLOSING_COL = "Date entered \"Fechamento (Oportunidade) (Closer)\""
 
 
 # Import necessário
