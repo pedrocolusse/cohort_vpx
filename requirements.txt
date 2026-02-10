@@ -2,7 +2,7 @@ PyYAML
 numpy
 pandas
 pyxlsb
-streamlit
+streamlit>=1.45.0
 streamlit_option_menu
 openpyxl
 plotly
