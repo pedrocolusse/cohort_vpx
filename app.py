@@ -34,7 +34,6 @@ from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
-from operator import attrgetter
 from streamlit_option_menu import option_menu
 import tempfile
 import os
@@ -685,22 +684,25 @@ def cohort():
             cohort_avg_ticket = pd.Series(cohort_avg_ticket).reindex(all_cohorts, fill_value=0)
             cohort_total_ticket = pd.Series(cohort_total_ticket).reindex(all_cohorts, fill_value=0)
             
-            # Agrupar considerando apenas fechados
-            df_grouped = df_fechados.groupby(['cohort', 'ano_cohort']).agg(n_customers1=(client_column, 'nunique')).reset_index(drop=False)
-            
-            # CORREÇÃO: Verificar se há dados agrupados antes de calcular period_number
+            # Agrupar considerando apenas fechados - usando dias reais para o bucket
+            # Para cada deal fechado, calcular dias reais entre primeira data e data de fechamento
+            df_fechados_copy = df_fechados.copy()
+            first_dates = df.groupby(client_column)[date_column].min().rename('first_date')
+            df_fechados_copy = df_fechados_copy.merge(first_dates, on=client_column, how='left')
+            df_fechados_copy['days_diff'] = (df_fechados_copy[date_column] - df_fechados_copy['first_date']).dt.days.clip(lower=0)
+            df_fechados_copy['period_number'] = (df_fechados_copy['days_diff'] // 30).astype(int)
+
+            df_grouped = df_fechados_copy.groupby(['cohort', 'period_number']).agg(n_customers1=(client_column, 'nunique')).reset_index(drop=False)
+
             if not df_grouped.empty:
-                df_grouped['period_number'] = (df_grouped.ano_cohort - df_grouped.cohort).apply(attrgetter('n'))
-                # Criar pivot table com os dados de fechados
                 cohort_pivot = df_grouped.pivot_table(index='cohort', columns='period_number', values='n_customers1')
             else:
-                # Se não houver fechados, criar pivot vazio
                 cohort_pivot = pd.DataFrame(index=all_cohorts, columns=[0])
-            
-            # CORREÇÃO: Reindexar o pivot para incluir todos os cohorts
+
+            # Reindexar o pivot para incluir todos os cohorts
             cohort_pivot = cohort_pivot.reindex(all_cohorts)
-            
-            # CORREÇÃO: Preencher NaN com 0 no pivot
+
+            # Preencher NaN com 0 no pivot
             cohort_pivot = cohort_pivot.fillna(0)
             
             # Usar o tamanho total da coorte para calcular a retenção
